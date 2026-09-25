@@ -55,7 +55,8 @@ asks for write access the first time you execute.
 # 1. index (metadata only) and report
 gdrive-organizer index-drive --db private/index.sqlite --config private/config.json --client-secret private/client_secret.json
 gdrive-organizer report      --db private/index.sqlite --config private/config.json > private/report.txt
-# optional: bounded content snippets for ambiguous names (never sensitive or protected ones)
+# optional: bounded content snippets for ambiguous names (never sensitive or protected ones);
+# --max-depth 0 limits it to the My Drive top level, --only-keys FILE to exact Drive IDs
 gdrive-organizer peek        --db private/index.sqlite --config private/config.json --client-secret private/client_secret.json --limit 300
 
 # 2. rules -> manifest -> validate (repeat until zero errors)
@@ -92,7 +93,9 @@ What `rules_to_plan.py` does for you:
   in the manifest instead of hidden behind a global flag.
 - Resolves **collisions** (two sources for one target, or a target that already exists with
   different case): the target becomes an `mkdir` and the sources merge their contents into it.
-  Their emptied shells stay in place. Identical colliding files go to `archive/duplicates`.
+  Their emptied shells stay in place. Files are never renamed: an identical colliding file goes
+  to `archive/duplicates`, a different one with the same name to a `same-name-2/` folder beside
+  the first. `STRIP_NAMES` lists the only exceptions (names with edge whitespace).
 - Optionally empties a **dump folder** (`DUMP = "old dropbox"`): its colliding children are moved
   whole into `<target>/from-old-dropbox` so the dump really ends up empty.
 - Prints counts per rule and a live, archive and left-in-place split. It never prints paths.
