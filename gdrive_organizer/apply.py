@@ -103,16 +103,17 @@ class FsBackend:
         return {"src_raw": self.raw[e["src_key"]]}
 
     def reconcile(self, e, rec):
-        """An intent without done: decide from the filesystem whether it happened."""
+        """An op without done (crash, or an error after acting): decide from the filesystem
+        whether it happened. Returns (verdict, undo info for a done record)."""
         if e["op"] == "mkdir":
-            return "done" if os.path.isdir(self.ab(e["dst"])) else "redo"
+            return ("done", {}) if os.path.isdir(self.ab(e["dst"])) else ("redo", {})
         src_ok = os.path.lexists(self.ab(self.raw[e["src_key"]]))
         dst_ok = os.path.lexists(self.ab(e["dst"]))
         if not src_ok and dst_ok:
-            return "done"
+            return "done", {"src_raw": self.raw[e["src_key"]]}
         if src_ok and not dst_ok:
-            return "redo"
-        return "halt"
+            return "redo", {}
+        return "halt", {}
 
     def undo(self, rec):
         if rec["op"] == "mkdir":
@@ -177,6 +178,8 @@ class DriveBackend:
                 "old_name": cur["name"], "new_name": res["name"]}
 
     def reconcile(self, e, rec):
+        """An op without done (crash, or a timeout after Drive applied it): decide from Drive
+        whether it happened. Returns (verdict, undo info for a done record)."""
         if e["op"] == "mkdir":
             pid = self.folder_id(g.parent_of(e["dst"]))
             name = e["dst"].rsplit("/", 1)[-1].replace("'", "\\'")
@@ -186,15 +189,20 @@ class DriveBackend:
             found = r.get("files", [])
             if len(found) == 1:
                 self.created[g.pkey(e["dst"])] = found[0]["id"]
-                return "done"
-            return "redo" if not found else "halt"
+                return "done", {"new_id": found[0]["id"], "parent": pid}
+            return ("redo", {}) if not found else ("halt", {})
         cur = self.gd.call(self.svc.files().get(fileId=e["src_key"], fields="name,parents"))
         new_pid = self.folder_id(g.parent_of(e["dst"]))
-        if cur.get("parents") == [new_pid] and cur["name"] == e["dst"].rsplit("/", 1)[-1]:
-            return "done"
+        new_name = e["dst"].rsplit("/", 1)[-1]
+        if cur.get("parents") == [new_pid] and cur["name"] == new_name:
+            # Unrenamed: the current name is the original. Renamed: the index name is the best
+            # record of it (a '/' in the original shows as ':' there).
+            old_name = cur["name"] if new_name == e["expect"]["name"] else e["expect"]["name"]
+            return "done", {"old_parent": e["src_parent_key"], "new_parent": new_pid,
+                            "old_name": old_name, "new_name": cur["name"]}
         if cur.get("parents") == [e["src_parent_key"]]:
-            return "redo"
-        return "halt"
+            return "redo", {}
+        return "halt", {}
 
     def undo(self, rec):
         if rec["op"] == "mkdir":
@@ -281,11 +289,15 @@ def main(argv=None) -> int:
         if prev and prev["state"] == "failed" and not a.retry_failed:
             raise SystemExit(f"op {e['i']} (manifest line {e['line']}) failed earlier: "
                              f"{prev.get('err')}. Inspect, then rerun with --retry-failed.")
-        if prev and prev["state"] == "intent":
-            verdict = be.reconcile(e, prev)
+        if prev and prev["state"] in ("intent", "failed"):
+            # A failed op may still have happened (e.g. a timeout after Drive applied it), so
+            # check reality before acting again.
+            verdict, extra = be.reconcile(e, prev)
             if verdict == "done":
-                journal.append({"i": e["i"], "state": "done", "op": e["op"], "dst": e["dst"],
-                                "src_key": e.get("src_key"), "reconciled": True})
+                journal.append(dict({"i": e["i"], "state": "done", "op": e["op"], "dst": e["dst"],
+                                     "src": e.get("src"), "src_key": e.get("src_key"),
+                                     "reconciled": True}, **extra))
+                print(f"op {e['i']}: already applied; recorded as done", flush=True)
                 continue
             if verdict == "halt":
                 raise SystemExit(f"op {e['i']} is in an unknown state; inspect by hand")
