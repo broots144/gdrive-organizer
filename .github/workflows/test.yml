@@ -25,5 +25,7 @@ jobs:
         run: python tests/test_fs_local.py
       - name: drive backend against a mocked Drive API
         run: python tests/test_drive_mock.py
+      - name: rules to manifest generator
+        run: python tests/test_rules_to_plan.py
       - name: CLI smoke
         run: gdrive-organizer --help

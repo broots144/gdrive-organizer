@@ -14,6 +14,8 @@ quarantine.txt
 report.txt
 client_secret*.json
 token*.json
+plan.jsonl
+/rules.py
 
 # Python
 __pycache__/

@@ -1,14 +1,17 @@
 #!/usr/bin/env bash
-# First publish of this folder as a PUBLIC GitHub repo. Two steps on purpose:
+# First publish of this folder as a GitHub repo. Two steps on purpose:
 #   bash scripts/publish.sh          local only: git init, noreply identity, hooks, tests,
 #                                    leak check, first commit. Prints what would be published.
-#   bash scripts/publish.sh --push   creates github.com/$OWNER/$REPO (public) and pushes.
+#   bash scripts/publish.sh --push   creates github.com/$OWNER/$REPO and pushes. Private by
+#                                    default; VISIBILITY=public bash scripts/publish.sh --push
+#                                    to publish, or later: gh repo edit --visibility public
 # Run it yourself (a terminal tab, or "! bash scripts/publish.sh" in Claude Code, which runs
 # outside the sandbox). gh is Go based and can fail TLS inside the macOS sandbox.
 set -euo pipefail
 OWNER="${OWNER:-broots144}"
 REPO="${REPO:-gdrive-organizer}"
-DESC="Guarded, reversible Google Drive reorganizer: metadata-only indexing, protected folders, validated manifests, journaled moves with undo."
+VISIBILITY="${VISIBILITY:-private}"
+DESC="Guarded, reversible Google Drive reorganizer for use with AI assistants: metadata-only index, protected folders, rules compiled to validated manifests, journaled moves with undo. Never deletes files."
 cd "$(dirname "$0")/.."
 
 # One-time placement of files the delivery tool could not write (.claude/, .github/workflows/).
@@ -33,9 +36,9 @@ if [ "${1:-}" = "--push" ]; then
     echo "your gh token lacks the 'workflow' scope needed to push .github/workflows:"
     echo "  gh auth refresh -h github.com -s workflow"; exit 1
   fi
-  gh repo create "$OWNER/$REPO" --public --source . --remote origin --push --description "$DESC"
+  gh repo create "$OWNER/$REPO" "--$VISIBILITY" --source . --remote origin --push --description "$DESC"
   gh repo edit "$OWNER/$REPO" --add-topic google-drive,macos,fileprovider,claude-code,file-organization >/dev/null || true
-  echo "published: https://github.com/$OWNER/$REPO"
+  echo "published ($VISIBILITY): https://github.com/$OWNER/$REPO"
   exit 0
 fi
 
@@ -51,7 +54,7 @@ if git diff --cached --quiet; then
   echo "nothing new to commit"
 else
   git commit -q -F - <<'MSG'
-Initial public release of gdrive-organizer
+Initial release of gdrive-organizer
 
 Guarded, reversible reorganization of Google Drive (My Drive):
 Drive API metadata index with protected folders excluded by ID, aggregate
@@ -59,7 +62,6 @@ reports for LLM review, bounded content peeks via the API, a manifest
 validator, and a journaled apply/undo executor with drive and fs backends.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_016w5Emtd7DRZtZcwoWz24Uc
 MSG
 fi
 echo
