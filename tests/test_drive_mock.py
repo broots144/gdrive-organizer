@@ -51,6 +51,7 @@ ITEMS = {
               "size": "20", "modifiedTime": OLD},
 }
 CALLS = []
+TIMEOUT_AFTER_APPLY = set()  # file IDs whose next update applies, then times out
 
 
 class Req:
@@ -106,6 +107,9 @@ class Files:
                 d["parents"].append(addParents)
             for k, v in (body or {}).items():
                 d[k] = v
+            if fileId in TIMEOUT_AFTER_APPLY:
+                TIMEOUT_AFTER_APPLY.discard(fileId)
+                raise TimeoutError("The read operation timed out")
             return self._meta(fileId)
         return Req(run)
 
@@ -211,6 +215,36 @@ def main():
         assert STATE[k]["parents"] == d["parents"] and STATE[k]["name"] == d["name"], k
     assert STATE[arch].get("trashed") is True
     print("undo(drive) OK: all parents and names restored; created folder trashed")
+    # a move that Drive applies but whose response times out: the retry must reconcile, not
+    # re-run it (which would halt on drift), and the reconciled record must still undo
+    with open("plan2.jsonl", "w") as fh:
+        for op in [
+            {"op": "mkdir", "dst": "Archive2"},
+            {"op": "move", "src": "homelab/proxmox-2021", "dst": "Archive2/proxmox-2021"},
+            {"op": "move", "src": "untitled document", "dst": "Archive2/homelab plan"},
+        ]:
+            fh.write(json.dumps(op) + "\n")
+    sha2 = g.sha256_file("plan2.jsonl")
+    base = ["--backend", "drive", "--db", "d.sqlite", "--config", "cfg.json",
+            "--manifest", "plan2.jsonl", "--execute", "--confirm-sha", sha2, "--pause", "0"]
+    before2 = copy.deepcopy(STATE)
+    TIMEOUT_AFTER_APPLY.add("PX")
+    rc = run("apply", base)
+    assert rc != 0 and "TimeoutError" in str(rc), rc
+    arch2 = [k for k, d in STATE.items() if d["name"] == "Archive2"][0]
+    assert STATE["PX"]["parents"] == [arch2], "the timed-out move did happen"
+    rc = run("apply", base)
+    assert "failed earlier" in str(rc), rc  # needs an explicit --retry-failed
+    rc = run("apply", base + ["--retry-failed"])
+    assert rc == 0, rc
+    assert STATE["PX"]["parents"] == [arch2] and STATE["GD"]["name"] == "homelab plan"
+    rc = run("apply", base + ["--undo"])
+    assert rc == 0, rc
+    for k, d in before2.items():
+        assert STATE[k]["parents"] == d["parents"] and STATE[k]["name"] == d["name"], k
+    assert STATE[arch2].get("trashed") is True
+    print("timeout after apply OK: retry reconciled, undo restored everything")
+
     bad = [c for c in CALLS if "LEGALID" in str(c[1]) or c[1] in ("L1", "L2", "LSUB", "SC")]
     assert not bad, bad
 

@@ -68,6 +68,8 @@ gdrive-organizer apply --backend drive --db private/index.sqlite --config privat
 gdrive-organizer apply ... --execute --confirm-sha <sha from validate> --max-ops 20     # canary
 gdrive-organizer apply ... --execute --confirm-sha <sha> --batch 50 --pause 60
 gdrive-organizer apply ... --execute --confirm-sha <sha> --undo                        # roll back
+# an op failed (e.g. a network timeout)? rerun with --retry-failed: it first checks Drive and
+# records the op as done if the change already landed, instead of doing it twice
 ```
 
 ### Writing rules
