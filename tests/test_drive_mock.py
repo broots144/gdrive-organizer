@@ -254,6 +254,27 @@ def main():
     snips = list(sqlite3.connect("d.sqlite").execute("select key,method,flagged from snippets"))
     print("peek snippets:", snips)
     assert all(k not in ("L1", "L2") for k, _, _ in snips)
+    db2 = sqlite3.connect("d.sqlite")
+    db2.execute("DELETE FROM snippets")
+    db2.commit()
+    rc = run("peek", ["--db", "d.sqlite", "--config", "cfg.json", "--client-secret", "x",
+                      "--max-depth", "0", "--include-sensitive"])
+    assert rc == 0
+    depth = dict(db2.execute("select key, depth from items"))
+    scoped = [k for k, in db2.execute("select key from snippets")]
+    assert scoped and all(depth[k] == 0 for k in scoped), scoped
+    assert all(k not in ("L1", "L2") for k in scoped)
+    print("peek --max-depth 0 --include-sensitive OK:", sorted(scoped))
+    db2.execute("DELETE FROM snippets")
+    db2.commit()
+    with open("keys.txt", "w") as fh:
+        fh.write("# ambiguous names only\nGD\nL1\n")  # L1 is protected: never indexed
+    rc = run("peek", ["--db", "d.sqlite", "--config", "cfg.json", "--client-secret", "x",
+                      "--only-keys", "keys.txt"])
+    assert rc == 0
+    only = [k for k, in db2.execute("select key from snippets")]
+    assert only == ["GD"], only
+    print("peek --only-keys OK")
     print("ALL DRIVE MOCK TESTS PASSED")
 
 

@@ -15,9 +15,16 @@ Here nothing touches local disk except this SQLite file:
     fullText queries)
 
 Candidates: not sensitive, not inside an atomic unit, and either a generic name (config
-generic_name_regex) or a loose document at depth 0-1.
+generic_name_regex) or a loose document at depth 0-1. --max-depth N narrows that to items at
+depth <= N (0 = the top level of My Drive) and then takes every document there, not only
+generic names.
 Any snippet matching no_snippet_regex is discarded and only flagged. Snippets stay in SQLite;
 feed an LLM (or a local model) only unflagged snippets.
+--only-keys FILE peeks exactly the Drive IDs listed in FILE (one per line), for when names
+already explain most files and only a few need a look; sensitivity rules still apply.
+--include-sensitive also peeks sensitive-named items and keeps the text of matching snippets
+(still marked flagged=1). Use it only when you have decided that content may be shown to your
+assistant. Protected folders are never affected: they are not in the index at all.
 """
 from __future__ import annotations
 
@@ -42,15 +49,23 @@ EXPORT = {
 }
 
 
-def candidates(db, cfg, limit):
+def candidates(db, cfg, limit, max_depth=None, include_sensitive=False, only_keys=None):
     gen = re.compile(cfg["generic_name_regex"])
+    sens = "" if include_sensitive else "AND sensitive=0 "
     rows = db.execute(
         "SELECT key,name,depth,kind,ext,size,mime FROM items WHERE kind IN ('file','gdoc') "
-        "AND sensitive=0 AND under_atomic IS NULL AND key NOT IN (SELECT key FROM snippets)"
+        f"{sens}AND under_atomic IS NULL AND key NOT IN (SELECT key FROM snippets)"
     ).fetchall()
     out = []
     for r in rows:
-        if gen.match(r["name"]) or (r["depth"] <= 1 and (r["ext"] in DOC_EXTS or r["kind"] == "gdoc")):
+        doc = r["ext"] in DOC_EXTS or r["kind"] == "gdoc"
+        if only_keys is not None:
+            keep = r["key"] in only_keys
+        elif max_depth is not None:
+            keep = r["depth"] <= max_depth and (doc or gen.match(r["name"]))
+        else:
+            keep = gen.match(r["name"]) or (r["depth"] <= 1 and doc)
+        if keep:
             out.append(r)
         if limit and len(out) >= limit:
             break
@@ -90,6 +105,10 @@ def main(argv=None) -> int:
     ap.add_argument("--limit", type=int, default=500)
     ap.add_argument("--max-bytes", type=int, default=15 * 1024 * 1024)
     ap.add_argument("--chars", type=int, default=1500)
+    ap.add_argument("--max-depth", type=int, help="only items at depth <= N (0 = My Drive top level)")
+    ap.add_argument("--only-keys", help="file of Drive IDs (one per line) to peek, nothing else")
+    ap.add_argument("--include-sensitive", action="store_true",
+                    help="also peek sensitive-named items and keep flagged snippet text")
     a = ap.parse_args(argv)
     cfg = g.load_config(a.config)
     guard = g.Guard(cfg)
@@ -98,7 +117,11 @@ def main(argv=None) -> int:
         raise SystemExit("peek_drive needs an index built by `index-drive` (Drive IDs)")
     g.load_protected(db, guard)
     svc = gdrive.service("read", a.client_secret, a.token)
-    cands = candidates(db, cfg, a.limit)
+    only = None
+    if a.only_keys:
+        with open(a.only_keys, encoding="utf-8") as fh:
+            only = {ln.strip() for ln in fh if ln.strip() and not ln.startswith("#")}
+    cands = candidates(db, cfg, a.limit, a.max_depth, a.include_sensitive, only)
     stats = {"candidates": len(cands), "ok": 0, "flagged": 0, "skipped": 0, "errors": 0}
     for r in cands:
         method, text, flagged, err = "skip", None, 0, None
@@ -110,7 +133,9 @@ def main(argv=None) -> int:
         if err:
             method = "error"
         elif text and guard.no_snippet and guard.no_snippet.search(text):
-            text, flagged = None, 1
+            flagged = 1
+            if not a.include_sensitive:
+                text = None
             stats["flagged"] += 1
         elif method == "skip":
             stats["skipped"] += 1

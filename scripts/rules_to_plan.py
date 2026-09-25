@@ -14,12 +14,17 @@ The rules file (see examples/rules.example.py) defines:
   DUPLICATES_DIR  optional: where colliding identical files go (default archive/duplicates)
   UNSORTED_DIR    optional: where units that cannot merge go (default archive/unsorted)
   LIVE_TOPS       optional: top-level names reported as the live taxonomy
+  STRIP_NAMES     optional: exact file names allowed one rename, stripping leading/trailing
+                  whitespace (validate refuses such names); each op gets a "note" saying so
 
 Output ops are mkdir and move only. Never renames files or anything inside a moved unit.
 Collisions (several sources for one target, a target that already exists case-insensitively, or
 a target that must also hold other targets) become an mkdir plus a merge: a source outside the
 dump moves its children in and its empty shell stays put; a direct child of the dump moves whole
-to <target>/<DUMP_NEST> so the dump still empties. Sensitive sources get override "sensitive".
+to <target>/<DUMP_NEST> so the dump still empties. Files are never renamed: a file whose name is
+taken at its target goes to DUPLICATES_DIR if byte-identical (same md5) to the file keeping the
+name, otherwise into a same-name-2/, same-name-3/ ... folder beside it (Google Docs have no md5,
+so same-name Docs take that route). Sensitive sources get override "sensitive".
 Not owned, not movable, recently modified, protected and dot items stay in place.
 Output is counts only, never row paths.
 """
@@ -86,6 +91,7 @@ def main(argv=None) -> int:
     dup_dir = ns.get("DUPLICATES_DIR", "archive/duplicates").strip("/")
     unsorted_dir = ns.get("UNSORTED_DIR", "archive/unsorted").strip("/")
     recent = time.time() - cfg["recent_days"] * 86400
+    strip_names = set(ns.get("STRIP_NAMES", []))
 
     rows = db.execute("SELECT * FROM items").fetchall()
     by_key = {r["key"]: r for r in rows}
@@ -130,6 +136,8 @@ def main(argv=None) -> int:
                 return "recent"
         elif (r["mtime"] or 0) > recent:
             return "recent"
+        elif r["name"] != r["name"].strip() and r["name"] not in strip_names:
+            return "name_edge_whitespace"  # files keep their names; validate refuses these
         return None
 
     # 1. evaluate rules, first match wins
@@ -139,7 +147,8 @@ def main(argv=None) -> int:
             if key in assign:
                 continue
             r = by_key[key]
-            assign[key] = rule["dst"].format(lh=lh(r["name"], r["kind"]), orig=orig(r))
+            name = r["name"].strip() if r["name"] in strip_names else r["name"]
+            assign[key] = rule["dst"].format(lh=lh(name, r["kind"]), orig=orig(r))
             rule_of[key] = rule["id"]
     # keep outermost only (sources must be disjoint)
     assigned_pks = {by_key[k]["pathkey"] for k in assign}
@@ -166,26 +175,36 @@ def main(argv=None) -> int:
             exists_as_dir = pk in dir_path
             if len(keys) == 1 and pk not in by_pk and pk not in need_parent:
                 continue
-            if pk in by_pk and not exists_as_dir:
-                for k in keys:  # target taken by a file or ambiguous names: leave in place
-                    del assign[k]
-                    blocked["target_occupied"] += 1
-                changed = True
-                continue
             target = assign[keys[0]]
             files = sorted((k for k in keys if by_key[k]["kind"] not in FOLDER_KINDS),
                            key=lambda k: by_key[k]["path"])
-            keeper = files[0] if files and len(keys) == len(files) and not exists_as_dir \
+            occupant = None
+            if pk in by_pk and not exists_as_dir:
+                occupant = by_pk[pk][0]  # an indexed file already holds this name
+                if occupant["kind"] in FOLDER_KINDS or len(files) != len(keys):
+                    for k in keys:  # ambiguous, or folder against file: leave in place
+                        del assign[k]
+                        blocked["target_occupied"] += 1
+                    changed = True
+                    continue
+            keeper = files[0] if occupant is None and files and len(keys) == len(files) \
                 and pk not in need_parent else None
+            kr = occupant if occupant is not None else (by_key[keeper] if keeper else None)
+            n_same = 1
             for k in keys:
                 r = by_key[k]
                 if k == keeper:
                     continue
                 if r["kind"] not in FOLDER_KINDS:
-                    kr = by_key[keeper] if keeper else None
                     if kr is not None and r["md5"] and r["md5"] == kr["md5"]:
                         assign[k] = dup_dir + "/" + orig(r)
                         counts["file_collision_to_duplicates"] += 1
+                    elif kr is not None:
+                        n_same += 1
+                        parent = g.parent_of(target)
+                        assign[k] = (parent + "/" if parent else "") + \
+                            f"same-name-{n_same}/{r['name']}"
+                        counts["file_collision_to_same_name_folder"] += 1
                     else:
                         del assign[k]
                         blocked["file_name_collision"] += 1
@@ -248,6 +267,8 @@ def main(argv=None) -> int:
               "rule": rule_of.get(k, "merge")}
         if r["sensitive"]:
             op["override"] = ["sensitive"]
+        if r["name"] in strip_names and r["kind"] not in FOLDER_KINDS:
+            op["note"] = "rename: strips leading/trailing whitespace (STRIP_NAMES)"
         ops.append(op)
     with open(a.out, "w", encoding="utf-8") as fh:
         for op in ops:
@@ -295,7 +316,8 @@ def main(argv=None) -> int:
     print("split (files, bytes):")
     for bucket, (f, b) in sorted(split.items()):
         print(f"  {bucket:<14} files={f:<6} bytes={b} ({human(b)})")
-    print(f"items remaining in dump: {sum(dump_left.values())} {dict(dump_left)}")
+    if dump_pk:
+        print(f"items remaining in dump: {sum(dump_left.values())} {dict(dump_left)}")
     print(f"ops={len(ops)} mkdir={len(mk_paths)} move={len(moves)} -> {a.out}")
     return 0
 

@@ -39,6 +39,7 @@ RULES = [
     dict(id="family", where="(" + DUMP_CHILD + " AND lower(i.name)='legal notes') "
          "OR (i.depth=0 AND i.pathkey='shared stuff')", dst="family/{lh}"),
     dict(id="media", where="i.depth=0 AND i.pathkey='photos'", dst="media/{lh}"),
+    dict(id="root-notes", where="i.depth=0 AND i.kind IN ('file','gdoc')", dst="notes/{lh}"),
     dict(id="unsorted", where=DUMP_CHILD, dst="archive/unsorted/{orig}"),
 ]
 '''
@@ -82,6 +83,13 @@ def build(db, cfg):
     add("L", "live", "dir")
     add("L1", "live/today.bak", parent="L", size=1, mtime=NEW)
     add("N", "shared stuff", "dir", owned=0)
+    add("R1", "event evaluation", "gdoc")  # same-name Google Docs, no md5
+    add("R2", "event evaluation", "gdoc")
+    add("NT", "notes", "dir")
+    add("NT1", "notes/plan.txt", parent="NT", size=9, md5="p1")
+    add("R3", "plan.txt", size=9, md5="p1")  # identical to the file already at its target
+    add("R4", "todo.txt", size=3, md5="q1")
+    add("NT2", "notes/todo.txt", parent="NT", size=4, md5="q2")  # name taken, other bytes
     db.execute("INSERT INTO protected(path, pathkey, key, reason) VALUES(?,?,?,?)",
                (PROTECTED, g.pkey(PROTECTED), "PROT", "id or name match"))
     g.set_meta(db, "backend", "drive")
@@ -132,6 +140,10 @@ def main():
     same = sorted(dsts[k] for k in ("T1S", "T2S"))
     assert same == ["archive/duplicates/taxes/2020/same.pdf", "finance/taxes/2020/same.pdf"], same
     assert not {"T1", "T2", "T1Y", "T2Y"} & set(dsts), "merged shells must stay in place"
+    ev = sorted(dsts[k] for k in ("R1", "R2"))
+    assert ev == ["notes/event evaluation", "notes/same-name-2/event evaluation"], ev
+    assert dsts["R3"] == "archive/duplicates/plan.txt", dsts
+    assert dsts["R4"] == "notes/same-name-2/todo.txt", dsts
     # left in place
     assert not {"L", "L1", "N"} & set(dsts), dsts
     assert not any(PROTECTED.casefold() in (o.get("src", "") + o["dst"]).casefold() for o in ops)
