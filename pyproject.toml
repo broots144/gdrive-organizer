@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "gdrive-organizer"
 version = "0.1.0"
-description = "Guarded, reversible Google Drive reorganizer: metadata-only indexing, protected folders, validated manifests, journaled moves with undo."
+description = "Guarded, reversible Google Drive reorganizer for use with AI assistants: metadata-only index, protected folders, rules compiled to validated manifests, journaled moves with undo. Never deletes files."
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]

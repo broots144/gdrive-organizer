@@ -1,7 +1,8 @@
 # CLAUDE.md
 
-Guidance for Claude Code sessions in this repository. This is a public repo; the owner's actual
-Drive work also happens here, with every personal artifact confined to `private/` (gitignored).
+Guidance for Claude Code sessions in this repository. The repo is meant to be shared; each user's
+actual Drive work also happens here, with every personal artifact confined to `private/`
+(gitignored).
 
 ## Hard rules
 
@@ -18,8 +19,9 @@ Drive work also happens here, with every personal artifact confined to `private/
    of the `snippets` table. Do not dump the `items`, `protected` or `errors` tables, and do not open
    `private/quarantine.txt`.
 5. **Write rules, not per-file decisions.** Express the taxonomy as rules (SQL predicate over
-   `items` plus a destination template), generate `private/plan.jsonl` with a script, then run
-   `validate`. Prefer folder-level moves. Never split an atomic unit.
+   `items` plus a destination template) in `private/rules.py`, generate `private/plan.jsonl` with
+   `scripts/rules_to_plan.py`, then run `validate`. Prefer folder-level moves. Never split an
+   atomic unit. Manifests contain only `mkdir` and `move`; never propose deletions.
 6. **Nothing personal in git.** Before any commit, `python3 scripts/leak_check.py --all` must pass
    (hooks run it automatically). Commits use the GitHub noreply identity.
 
@@ -29,12 +31,14 @@ Drive work also happens here, with every personal artifact confined to `private/
 - `index_drive.py` / `index_fs.py`: phase 1 (API recommended, mount fallback)
 - `report.py`: aggregates for review; `peek.py`: bounded snippets via API
 - `validate.py`: manifest gate; `apply.py`: journaled executor (drive, fs) with undo
-- `tests/`: fake-tree end to end and mocked Drive API; `docs/`: FileProvider findings
+- `scripts/rules_to_plan.py`: rules file to manifest (collisions, merges, gates, counts only)
+- `examples/`: config, rules and manifest templates to copy into `private/`
+- `tests/`: fake-tree end to end, mocked Drive API, rules generator; `docs/`: FileProvider findings
 
 ## Commands
 
 ```bash
-python3 tests/test_fs_local.py && python3 tests/test_drive_mock.py
+python3 tests/test_fs_local.py && python3 tests/test_drive_mock.py && python3 tests/test_rules_to_plan.py
 gdrive-organizer --help
 ```
 
