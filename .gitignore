@@ -1,0 +1,26 @@
+# Everything personal lives in private/: config with protected names, OAuth client and tokens,
+# indexes, reports, quarantine lists, manifests, journals. Never commit it.
+/private/
+.private-patterns
+.claude/settings.local.json
+/_install/
+
+# Belt and braces in case something lands outside private/
+*.sqlite
+*.sqlite-journal
+*.journal.jsonl
+*.undo.jsonl
+quarantine.txt
+report.txt
+client_secret*.json
+token*.json
+
+# Python
+__pycache__/
+*.egg-info/
+.venv/
+build/
+dist/
+
+# macOS
+.DS_Store

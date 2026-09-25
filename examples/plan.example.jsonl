@@ -1,0 +1,5 @@
+{"op": "mkdir", "dst": "Archive"}
+{"op": "mkdir", "dst": "Archive/Homelab"}
+{"op": "move", "src": "old-backups/proxmox-2021", "dst": "Archive/Homelab/proxmox-2021"}
+{"op": "move", "src": "Scan_001.pdf", "src_key": "ID_FROM_INDEX_WHEN_NAME_IS_DUPLICATED", "dst": "Archive/2021-03-02 vehicle title.pdf"}
+{"op": "move", "src": "rclone-target", "dst": "Archive/rclone-target", "override": ["recent"]}

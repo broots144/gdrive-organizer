@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gdrive-organizer"
+version = "0.1.0"
+description = "Guarded, reversible Google Drive reorganizer: metadata-only indexing, protected folders, validated manifests, journaled moves with undo."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.9"
+authors = [{ name = "broots144" }]
+keywords = ["google-drive", "file-organization", "macos", "fileprovider", "claude-code"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Topic :: System :: Filesystems",
+]
+dependencies = []
+
+[project.optional-dependencies]
+api = ["google-api-python-client>=2.100", "google-auth-oauthlib>=1.0"]
+peek = ["pypdf>=3.0", "python-docx>=1.0"]
+all = ["gdrive-organizer[api,peek]"]
+
+[project.scripts]
+gdrive-organizer = "gdrive_organizer.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/broots144/gdrive-organizer"
+Issues = "https://github.com/broots144/gdrive-organizer/issues"
+
+[tool.setuptools]
+packages = ["gdrive_organizer"]

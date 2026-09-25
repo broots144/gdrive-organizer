@@ -1,0 +1,45 @@
+# CLAUDE.md
+
+Guidance for Claude Code sessions in this repository. This is a public repo; the owner's actual
+Drive work also happens here, with every personal artifact confined to `private/` (gitignored).
+
+## Hard rules
+
+1. **Never execute moves.** Do not run `gdrive-organizer apply --execute` or `--undo --execute`,
+   and never call Drive API write methods yourself. Dry runs and `validate` are fine. The human
+   runs execution in their own terminal.
+2. **Never read Drive content.** Do not open, cat, head, grep or Read anything under
+   `~/Library/CloudStorage` or the Drive for desktop cache. The sandbox and permission rules
+   enforce most of this; treat any EPERM there as correct behavior, not something to route around.
+3. **Protected folders are untouchable.** Their names and IDs live in `private/config.json`. Never
+   list, search, print or reason about their contents, never propose a move of them or any ancestor,
+   and never echo their names into tracked files, commit messages or chat.
+4. **Read reports, not rows.** Your inputs are `gdrive-organizer report` output and unflagged rows
+   of the `snippets` table. Do not dump the `items`, `protected` or `errors` tables, and do not open
+   `private/quarantine.txt`.
+5. **Write rules, not per-file decisions.** Express the taxonomy as rules (SQL predicate over
+   `items` plus a destination template), generate `private/plan.jsonl` with a script, then run
+   `validate`. Prefer folder-level moves. Never split an atomic unit.
+6. **Nothing personal in git.** Before any commit, `python3 scripts/leak_check.py --all` must pass
+   (hooks run it automatically). Commits use the GitHub noreply identity.
+
+## Layout
+
+- `gdrive_organizer/core.py`: guard, schema, NFC/casefold keys, macOS primitives
+- `index_drive.py` / `index_fs.py`: phase 1 (API recommended, mount fallback)
+- `report.py`: aggregates for review; `peek.py`: bounded snippets via API
+- `validate.py`: manifest gate; `apply.py`: journaled executor (drive, fs) with undo
+- `tests/`: fake-tree end to end and mocked Drive API; `docs/`: FileProvider findings
+
+## Commands
+
+```bash
+python3 tests/test_fs_local.py && python3 tests/test_drive_mock.py
+gdrive-organizer --help
+```
+
+## Conventions
+
+- Python 3.9+ (macOS system python). No runtime dependencies in core; Google libs are extras.
+- Label claims in docs as fact, estimate or guess, with sources.
+- No em dashes or en dashes in docs or messages.

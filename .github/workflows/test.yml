@@ -1,0 +1,29 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python: ["3.10", "3.13"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -m pip install -e ".[all]"
+      - name: fs backend end to end (real renamex_np / getxattr / iopolicy on macOS)
+        run: python tests/test_fs_local.py
+      - name: drive backend against a mocked Drive API
+        run: python tests/test_drive_mock.py
+      - name: CLI smoke
+        run: gdrive-organizer --help

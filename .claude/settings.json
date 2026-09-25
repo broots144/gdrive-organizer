@@ -1,0 +1,24 @@
+{
+  "sandbox": {
+    "enabled": true,
+    "allowUnsandboxedCommands": false,
+    "filesystem": {
+      "denyRead": [
+        "~/Library/Application Support/Google/DriveFS"
+      ],
+      "denyWrite": [
+        "~/Library/CloudStorage"
+      ]
+    }
+  },
+  "permissions": {
+    "deny": [
+      "Read(//Users/*/Library/CloudStorage/**)",
+      "Edit(//Users/*/Library/CloudStorage/**)",
+      "Read(./private/client_secret*.json)",
+      "Read(./private/token*.json)",
+      "Read(./private/quarantine.txt)",
+      "Read(./.private-patterns)"
+    ]
+  }
+}

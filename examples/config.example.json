@@ -1,0 +1,6 @@
+{
+  "protected_names": ["NAME_OF_FOLDER_THAT_MUST_NEVER_BE_TOUCHED"],
+  "protected_regex": "(?i)name[\\W_]*of[\\W_]*folder",
+  "protected_ids": ["PASTE_FOLDER_ID_FROM_ITS_DRIVE_URL"],
+  "recent_days": 30
+}
