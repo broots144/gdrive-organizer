@@ -4,14 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gdrive-organizer"
-version = "0.1.0"
+version = "0.2.0"
 description = "Guarded, reversible Google Drive reorganizer for use with AI assistants: metadata-only index, protected folders, rules compiled to validated manifests, journaled moves with undo, and duplicate removal only to trash."
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.9"
 authors = [{ name = "broots144" }]
-keywords = ["google-drive", "file-organization", "macos", "fileprovider", "claude-code"]
+keywords = ["google-drive", "file-organization", "deduplication", "llm", "claude-code", "macos"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Environment :: Console",
@@ -33,6 +33,8 @@ gdrive-organizer = "gdrive_organizer.cli:main"
 [project.urls]
 Homepage = "https://github.com/broots144/gdrive-organizer"
 Issues = "https://github.com/broots144/gdrive-organizer/issues"
+Documentation = "https://github.com/broots144/gdrive-organizer/blob/main/docs/usage.md"
+Changelog = "https://github.com/broots144/gdrive-organizer/blob/main/CHANGELOG.md"
 
 [tool.setuptools]
 packages = ["gdrive_organizer"]

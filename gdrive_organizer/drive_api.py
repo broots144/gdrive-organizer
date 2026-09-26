@@ -38,12 +38,16 @@ def service(scope_key: str, client_secret: str, token_path: str):
     creds = None
     if os.path.exists(token_path):
         creds = Credentials.from_authorized_user_file(token_path, scope)
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
+    if creds and not creds.valid and creds.expired and creds.refresh_token:
+        try:
             creds.refresh(Request())
-        else:
-            flow = InstalledAppFlow.from_client_secrets_file(client_secret, scope)
-            creds = flow.run_local_server(port=0)
+        except Exception as ex:  # e.g. invalid_grant: Testing-mode tokens die after 7 days
+            print(f"stored token could not be refreshed ({type(ex).__name__}); "
+                  "signing in again", flush=True)
+            creds = None
+    if not creds or not creds.valid:
+        flow = InstalledAppFlow.from_client_secrets_file(client_secret, scope)
+        creds = flow.run_local_server(port=0)
         os.makedirs(os.path.dirname(os.path.abspath(token_path)), exist_ok=True)
         with open(token_path, "w") as fh:
             fh.write(creds.to_json())
