@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.0 (2026-09-26)
+
+- New subcommands `gdrive-organizer plan`, `dedupe` and `empty-dirs`, so the whole workflow works
+  from an installed package. The `scripts/*_to_plan.py` paths remain as thin wrappers.
+- `examples/demo/`: a one-minute demo on a fake local "My Drive" (no Google account), run in CI,
+  and the recording at the top of the README.
+- `report` creates the folder for its quarantine list instead of failing on a fresh checkout.
+- Test fixtures use a neutral protected-folder name.
+
 ## 0.2.0 (2026-09-25)
 
 - `scripts/rules_to_plan.py`: compile rules (SQL predicates plus destination templates) into a

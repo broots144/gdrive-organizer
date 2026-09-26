@@ -1,4 +1,4 @@
-"""scripts/rules_to_plan.py on a synthetic index: the manifest it writes must validate with zero
+"""`gdrive-organizer plan` (and `dedupe`) on a synthetic index: the manifest it writes must validate with zero
 errors, empty the dump folder, merge case-insensitive collisions, route identical colliding files
 to duplicates, mark sensitive sources with an override, never rename files, and leave protected,
 not-owned and recently modified items where they are.
@@ -14,12 +14,11 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, ROOT)
-sys.path.insert(0, os.path.join(ROOT, "scripts"))
 from gdrive_organizer import core as g  # noqa: E402
 from gdrive_organizer import validate  # noqa: E402
-import rules_to_plan  # noqa: E402
+from gdrive_organizer import plan as rules_to_plan  # noqa: E402
 
-PROTECTED = "ACME_V_EXAMPLECORP_LEGAL"
+PROTECTED = "EXAMPLE_PROTECTED_FOLDER"
 OLD = time.time() - 5 * 365 * 86400
 NEW = time.time() - 86400
 
@@ -150,7 +149,7 @@ def main():
     print(f"rules_to_plan: ok ({len(ops)} ops, {len(moves)} moves, 0 validation errors)")
 
     # dupes_to_plan on the same index: byte-identical files only, preferred copy kept
-    import dupes_to_plan
+    from gdrive_organizer import dedupe as dupes_to_plan
     pol, dd = os.path.join(tmp, "dedupe.py"), os.path.join(tmp, "dedupe.jsonl")
     open(pol, "w").write('KEEP_ORDER = ["photos"]\nLAST = ["old dump"]\nNEVER_TRASH = ["live"]\n')
     with contextlib.redirect_stdout(io.StringIO()):

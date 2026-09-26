@@ -121,6 +121,7 @@ def main(argv=None) -> int:
 
     sens = [r for r in rows if r["sensitive"]]
     p(f"\n## sensitive-looking names: {len(sens)} (listed only in {a.quarantine_out}, not here)")
+    os.makedirs(os.path.dirname(os.path.abspath(a.quarantine_out)), exist_ok=True)
     with open(a.quarantine_out, "w", encoding="utf-8") as fh:
         for r in sorted(sens, key=lambda r: r["path"]):
             fh.write(f"{r['kind']}\t{r['path']}\n")

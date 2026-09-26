@@ -27,5 +27,7 @@ jobs:
         run: python tests/test_drive_mock.py
       - name: rules to manifest generator
         run: python tests/test_rules_to_plan.py
+      - name: demo end to end (fake tree, fs backend)
+        run: DEMO_FAST=1 bash examples/demo/run.sh
       - name: CLI smoke
         run: gdrive-organizer --help

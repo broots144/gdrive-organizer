@@ -17,7 +17,7 @@ from gdrive_organizer import core as g  # noqa: E402
 from gdrive_organizer import drive_api as gdrive  # noqa: E402
 from gdrive_organizer import validate  # noqa: E402
 
-PROTECTED = "ACME_V_EXAMPLECORP_LEGAL"
+PROTECTED = "EXAMPLE_PROTECTED_FOLDER"
 
 F = g.FOLDER_MIME
 OLD = "2021-03-01T00:00:00.000Z"

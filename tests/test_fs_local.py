@@ -14,7 +14,7 @@ import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
-PROTECTED = "ACME_V_EXAMPLECORP_LEGAL"
+PROTECTED = "EXAMPLE_PROTECTED_FOLDER"
 ENV = dict(os.environ, PYTHONPATH=REPO)
 
 
@@ -39,14 +39,14 @@ ROOT = os.path.join(WORK, "My Drive")
 subprocess.run([sys.executable, os.path.join(HERE, "make_tree.py"), ROOT], check=True)
 with open(os.path.join(WORK, "config.json"), "w") as fh:
     json.dump({"protected_names": [PROTECTED],
-               "protected_regex": r"(?i)acme[\W_]*v[\W_]*examplecorp"}, fh)
+               "protected_regex": r"(?i)example[\W_]*protected[\W_]*folder"}, fh)
 before = listing(ROOT)
 cli("index-fs", "--root", ROOT, "--db", "fs.sqlite", "--config", "config.json", "--allow-any-root")
 
 db = sqlite3.connect(os.path.join(WORK, "fs.sqlite"))
 reasons = sorted(r[0] for r in db.execute("SELECT reason FROM protected"))
 assert reasons == ["link or shortcut to protected", "name match", "name match"], reasons
-leaked = db.execute("SELECT COUNT(*) FROM items WHERE path LIKE '%ACME%'").fetchone()[0]
+leaked = db.execute("SELECT COUNT(*) FROM items WHERE path LIKE '%PROTECTED_FOLDER%'").fetchone()[0]
 assert leaked == 0, "protected content reached the index"
 print("protected folder, its copy and a symlink to it were excluded")
 

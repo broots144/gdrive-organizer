@@ -5,7 +5,7 @@ import time
 import unicodedata
 
 root = sys.argv[1]
-PROTECTED = "ACME_V_EXAMPLECORP_LEGAL"
+PROTECTED = "EXAMPLE_PROTECTED_FOLDER"
 old = time.mktime((2021, 3, 1, 0, 0, 0, 0, 0, -1))
 
 
