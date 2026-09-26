@@ -8,3 +8,6 @@ updates:
     directory: /
     schedule:
       interval: monthly
+    # pyproject uses open ">=" floors on purpose (broad compatibility, Python 3.9+). Only move a
+    # floor when a release falls outside the range; security updates still arrive separately.
+    versioning-strategy: increase-if-necessary
