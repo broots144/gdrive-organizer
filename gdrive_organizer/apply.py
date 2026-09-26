@@ -184,8 +184,20 @@ class DriveBackend:
                 "old_name": cur["name"], "new_name": res["name"]}
 
     def trash(self, e):
-        """Move one exact duplicate to Drive's trash after re-checking both copies live."""
+        """Move one exact duplicate, or one empty folder, to Drive's trash after live checks."""
         fid = e["src_key"]
+        if e["kind"] == "dir":
+            cur = self.gd.call(self.svc.files().get(fileId=fid, fields="id,parents,trashed"))
+            if cur.get("trashed"):
+                raise RuntimeError("drift: folder is already trashed")
+            if cur.get("parents") != [e["src_parent_key"]]:
+                raise RuntimeError("drift: folder parent changed since indexing")
+            kids = self.gd.call(self.svc.files().list(
+                q=f"'{fid}' in parents and trashed = false", fields="files(id)", pageSize=1))
+            if kids.get("files"):
+                raise RuntimeError("folder is not empty in Drive; leaving it")
+            self.gd.call(self.svc.files().update(fileId=fid, body={"trashed": True}, fields="id"))
+            return {"trashed": True}
         fields = "id,name,parents,trashed,md5Checksum,size"
         cur = self.gd.call(self.svc.files().get(fileId=fid, fields=fields))
         keep = self.gd.call(self.svc.files().get(fileId=e["keep_key"], fields=fields))

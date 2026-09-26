@@ -47,6 +47,8 @@ ITEMS = {
     "LIVE": {"name": "rclone-target", "mimeType": F, "parents": ["HL"]},
     "LV1": {"name": "today.bak", "mimeType": "application/octet-stream", "parents": ["LIVE"],
             "size": "1", "modifiedTime": NEW},
+    "EMPTY": {"name": "old-empty", "mimeType": F, "parents": ["ROOT"]},
+    "ESUB": {"name": "nothing-here", "mimeType": F, "parents": ["EMPTY"]},
     "SLASH": {"name": "a/b notes.txt", "mimeType": "text/plain", "parents": ["ROOT"],
               "size": "20", "modifiedTime": OLD},
 }
@@ -259,7 +261,8 @@ def main():
         {"op": "trash", "src": "shared-with-me.xlsx", "src_key": "NO", "keep_key": "PX1"},
     ])
     joined = "\n".join(errs)
-    for needle in ("keep_key not found", "not byte-identical", "files only", "not owned by you"):
+    for needle in ("keep_key not found", "not byte-identical", "folder is not empty",
+                   "not owned by you"):
         assert needle in joined, (needle, joined)
     errs, _, _ = manifest("both.jsonl", [
         {"op": "trash", "src": px2, "src_key": "PX2", "keep_key": "PX1"},
@@ -281,6 +284,29 @@ def main():
     rc = run("apply", t_args + ["--undo"])
     assert rc == 0 and STATE["PX2"].get("trashed") is False, rc
     print("trash OK: identical-only, one copy survives, live re-check, undo un-trashes")
+
+    # empty folders: innermost first, nothing but folders below, checked live, undo un-trashes
+    empty_ops = [{"op": "trash", "src": "old-empty/nothing-here", "src_key": "ESUB"},
+                 {"op": "trash", "src": "old-empty", "src_key": "EMPTY"}]
+    errs, _, _ = manifest("bad-dirs.jsonl", list(reversed(empty_ops)) + [
+        {"op": "trash", "src": "homelab", "src_key": "HL"}])
+    joined = "\n".join(errs)
+    assert "not trashed earlier" in joined and "folder is not empty" in joined, joined
+    errs, _, plan4 = manifest("dirs.jsonl", empty_ops)
+    assert not errs and [p["kind"] for p in plan4] == ["dir", "dir"], errs
+    sha4 = g.sha256_file("dirs.jsonl")
+    d_args = ["--backend", "drive", "--db", "d.sqlite", "--config", "cfg.json",
+              "--manifest", "dirs.jsonl", "--execute", "--confirm-sha", sha4, "--pause", "0"]
+    STATE["LATE"] = {"name": "added-after-index.txt", "mimeType": "text/plain",
+                     "parents": ["ESUB"], "size": "1", "modifiedTime": OLD}
+    rc = run("apply", d_args)
+    assert "not empty in Drive" in str(rc) and not STATE["ESUB"].get("trashed"), rc
+    del STATE["LATE"]
+    rc = run("apply", d_args + ["--retry-failed"])
+    assert rc == 0 and STATE["ESUB"]["trashed"] and STATE["EMPTY"]["trashed"], rc
+    rc = run("apply", d_args + ["--undo"])
+    assert rc == 0 and not STATE["ESUB"]["trashed"] and not STATE["EMPTY"]["trashed"], rc
+    print("empty-folder trash OK: order enforced, non-empty refused (index and live), undo")
 
     bad = [c for c in CALLS if "LEGALID" in str(c[1]) or c[1] in ("L1", "L2", "LSUB", "SC")]
     assert not bad, bad

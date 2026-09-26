@@ -13,3 +13,6 @@ LAST = ["archive/unsorted", "archive/duplicates"]
 # Never trash anything under these prefixes: whole units (software, backups, code trees) and
 # folders an app writes to (scanner or browser landing folders).
 NEVER_TRASH = ["archive/software", "archive/backups", "archive/work", "Scans"]
+
+# empty_dirs_to_plan.py: folders to keep even when empty (your top-level taxonomy)
+KEEP_EMPTY = ["personal", "finance", "work", "media", "archive"]
