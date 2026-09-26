@@ -149,6 +149,22 @@ def main():
     assert not any(PROTECTED.casefold() in (o.get("src", "") + o["dst"]).casefold() for o in ops)
     print(f"rules_to_plan: ok ({len(ops)} ops, {len(moves)} moves, 0 validation errors)")
 
+    # dupes_to_plan on the same index: byte-identical files only, preferred copy kept
+    import dupes_to_plan
+    pol, dd = os.path.join(tmp, "dedupe.py"), os.path.join(tmp, "dedupe.jsonl")
+    open(pol, "w").write('KEEP_ORDER = ["photos"]\nLAST = ["old dump"]\nNEVER_TRASH = ["live"]\n')
+    with contextlib.redirect_stdout(io.StringIO()):
+        assert dupes_to_plan.main(["--db", db_path, "--config", cfg_path, "--policy", pol,
+                                   "--out", dd]) == 0
+    tops = validate.load_manifest(dd)
+    errors, _, tplan = validate.validate(g.open_db(db_path), g.load_config(cfg_path), tops)
+    assert not errors, errors
+    pairs = {o["src_key"]: o["keep_key"] for o in tops}
+    assert pairs.get("DC") == "P1", pairs            # dump copy goes, the Photos copy stays
+    assert len({"T1S", "T2S"} & set(pairs)) == 1, pairs  # exactly one of an identical pair
+    assert "P1" not in pairs and all(k != v for k, v in pairs.items())
+    print(f"dupes_to_plan: ok ({len(tops)} trash ops, 0 validation errors)")
+
 
 if __name__ == "__main__":
     main()

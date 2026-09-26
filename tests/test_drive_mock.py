@@ -245,6 +245,43 @@ def main():
     assert STATE[arch2].get("trashed") is True
     print("timeout after apply OK: retry reconciled, undo restored everything")
 
+    # trash: exact duplicates only, one copy must survive, re-checked live, undo un-trashes
+    def manifest(path, ops):
+        with open(path, "w") as fh:
+            for op in ops:
+                fh.write(json.dumps(op) + "\n")
+        return validate.validate(g.open_db("d.sqlite"), cfg, validate.load_manifest(path))
+    px1, px2 = "homelab/proxmox-2021/vzdump-100.tar.gz", "homelab/proxmox-2021/vzdump-100 copy.tar.gz"
+    errs, _, _ = manifest("bad-trash.jsonl", [
+        {"op": "trash", "src": px2, "src_key": "PX2"},                           # no keep_key
+        {"op": "trash", "src": px2, "src_key": "PX2", "keep_key": "S1"},         # not identical
+        {"op": "trash", "src": "homelab/proxmox-2021", "src_key": "PX", "keep_key": "PX1"},
+        {"op": "trash", "src": "shared-with-me.xlsx", "src_key": "NO", "keep_key": "PX1"},
+    ])
+    joined = "\n".join(errs)
+    for needle in ("keep_key not found", "not byte-identical", "files only", "not owned by you"):
+        assert needle in joined, (needle, joined)
+    errs, _, _ = manifest("both.jsonl", [
+        {"op": "trash", "src": px2, "src_key": "PX2", "keep_key": "PX1"},
+        {"op": "trash", "src": px1, "src_key": "PX1", "keep_key": "PX2"},
+    ])
+    assert any("itself trashed" in e for e in errs), errs  # never both copies
+    errs, _, plan3 = manifest("trash.jsonl", [
+        {"op": "trash", "src": px2, "src_key": "PX2", "keep_key": "PX1"}])
+    assert not errs and plan3[0]["bytes"] == 5000, (errs, plan3)
+    sha3 = g.sha256_file("trash.jsonl")
+    t_args = ["--backend", "drive", "--db", "d.sqlite", "--config", "cfg.json",
+              "--manifest", "trash.jsonl", "--execute", "--confirm-sha", sha3, "--pause", "0"]
+    STATE["PX1"]["md5Checksum"] = "changed"  # the copy to keep drifted: must refuse
+    rc = run("apply", t_args)
+    assert "no longer identical" in str(rc) and not STATE["PX2"].get("trashed"), rc
+    STATE["PX1"]["md5Checksum"] = "aaa"
+    rc = run("apply", t_args + ["--retry-failed"])
+    assert rc == 0 and STATE["PX2"].get("trashed") is True and not STATE["PX1"].get("trashed")
+    rc = run("apply", t_args + ["--undo"])
+    assert rc == 0 and STATE["PX2"].get("trashed") is False, rc
+    print("trash OK: identical-only, one copy survives, live re-check, undo un-trashes")
+
     bad = [c for c in CALLS if "LEGALID" in str(c[1]) or c[1] in ("L1", "L2", "LSUB", "SC")]
     assert not bad, bad
 

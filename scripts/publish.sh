@@ -11,7 +11,7 @@ set -euo pipefail
 OWNER="${OWNER:-broots144}"
 REPO="${REPO:-gdrive-organizer}"
 VISIBILITY="${VISIBILITY:-private}"
-DESC="Guarded, reversible Google Drive reorganizer for use with AI assistants: metadata-only index, protected folders, rules compiled to validated manifests, journaled moves with undo. Never deletes files."
+DESC="Guarded, reversible Google Drive reorganizer for use with AI assistants: metadata-only index, protected folders, rules compiled to validated manifests, journaled moves with undo, and duplicate removal only to trash."
 cd "$(dirname "$0")/.."
 
 # One-time placement of files the delivery tool could not write (.claude/, .github/workflows/).
