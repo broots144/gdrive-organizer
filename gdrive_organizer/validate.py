@@ -11,9 +11,11 @@ Manifest: JSON Lines, applied in order. Paths are relative to My Drive, as shown
 Optional per-op "override": ["recent", "sensitive", "not_owned"] makes an exception explicit and
 auditable instead of a global flag.
 
-trash is the only removal op and exists for exact duplicates: Drive's trash (recoverable for 30
-days, and undo un-trashes). It is refused unless keep_key names another indexed file with the same
-non-empty md5 and size that this manifest neither trashes nor moves out from under the check.
+trash is the only removal op: Drive's trash (recoverable for 30 days; undo un-trashes). For a
+file it exists for exact duplicates and is refused unless keep_key names another indexed file with
+the same non-empty md5 and size that this manifest neither trashes nor moves. For a folder it is
+refused unless nothing but folders lies below it and every one of those is trashed earlier in the
+same manifest (innermost first); apply re-checks in Drive that the folder has no live children.
 
 Rules enforced (errors block execution):
   * nothing touches protected ground: the folder, anything inside it, any ANCESTOR of it
@@ -28,7 +30,8 @@ Rules enforced (errors block execution):
   * sensitive-looking names, items not owned by you, items Drive says you cannot move
   * name validity: <=255 UTF-8 bytes, no slash/NUL/control chars/colon, no edge whitespace
   * Google pointer files (.gdoc etc) keep their extension
-  * trash: files only (no folders), a byte-identical keep_key copy must survive the manifest
+  * trash: a file needs a byte-identical keep_key copy that survives the manifest; a folder must
+    be empty apart from folders trashed earlier in the manifest
 """
 from __future__ import annotations
 
@@ -89,7 +92,7 @@ def validate(db, cfg, ops):
     errors, warns, plan = [], [], []
 
     # pass 1: collect sources for the disjointness check, and every key this manifest trashes
-    trashed_keys, move_pks = set(), set()
+    trashed_keys, move_pks, trash_dir_pks = set(), set(), set()
     for op in ops:
         if op.get("op") in ("move", "trash") and "src" in op:
             src_pks.add(g.pkey(op["src"]))
@@ -97,6 +100,19 @@ def validate(db, cfg, ops):
             move_pks.add(g.pkey(op["src"]))
         if op.get("op") == "trash" and op.get("src_key"):
             trashed_keys.add(op["src_key"])
+            it = by_key.get(op["src_key"])
+            if it is not None and it["kind"] == "dir":
+                trash_dir_pks.add(it["pathkey"])
+    # what lies below each folder, for folder trash: non-folder count and descendant folder keys
+    nondir = collections.Counter()
+    subdirs = collections.defaultdict(list)
+    for r in rows:
+        for a in ancestors(r["pathkey"]):
+            if r["kind"] == "dir":
+                subdirs[a].append(r["key"])
+            else:
+                nondir[a] += 1
+    trashed_so_far = set()
 
     for i, op in enumerate(ops):
         tag = f"line {op['_line']}"
@@ -111,8 +127,10 @@ def validate(db, cfg, ops):
 
         if kind == "trash":
             entry = validate_trash(op, err, by_key, by_pk, guard, recent, over, trashed_keys,
-                                   src_pks, move_pks)
+                                   src_pks, move_pks, trash_dir_pks, nondir, subdirs,
+                                   trashed_so_far)
             if entry is not None and len(errors) == e0:
+                trashed_so_far.add(entry["src_key"])
                 entry.update(i=i, op="trash", line=op["_line"], dst="")
                 plan.append(entry)
             continue
@@ -218,7 +236,7 @@ def validate(db, cfg, ops):
 
 
 def validate_trash(op, err, by_key, by_pk, guard, recent, over, trashed_keys, src_pks,
-                   move_pks):
+                   move_pks, trash_dir_pks, nondir, subdirs, trashed_so_far):
     """Checks for one trash op. Returns the plan entry, or None after reporting errors."""
     src = g.nfc(op.get("src", "")).strip("/")
     spk = g.pkey(src)
@@ -230,11 +248,13 @@ def validate_trash(op, err, by_key, by_pk, guard, recent, over, trashed_keys, sr
     if v:
         err(f"src {v}")
     for a in ancestors(spk):
-        if a in src_pks:
+        if a in src_pks and a not in trash_dir_pks:
             err("src lies inside another source of this manifest")
             break
+    if item["kind"] == "dir":
+        return validate_trash_dir(op, err, item, src, guard, nondir, subdirs, trashed_so_far)
     if item["kind"] not in ("file", "gdoc"):
-        err("trash applies to files only, never folders, shortcuts or bundles")
+        err("trash applies to files and empty folders only, never shortcuts or bundles")
     if item["under_atomic"]:
         err(f"src is inside atomic unit '{item['under_atomic']}'")
     if item["sensitive"] and "sensitive" not in over:
@@ -269,6 +289,29 @@ def validate_trash(op, err, by_key, by_pk, guard, recent, over, trashed_keys, sr
                        "name": item["name"], "md5": item["md5"]}}
 
 
+def validate_trash_dir(op, err, item, src, guard, nondir, subdirs, trashed_so_far):
+    """An empty folder: nothing but folders below it, all trashed earlier (innermost first)."""
+    spk = item["pathkey"]
+    if op.get("keep_key"):
+        err("keep_key is for files; a folder trash needs none")
+    if nondir.get(spk):
+        err(f"folder is not empty: {nondir[spk]} non-folder item(s) below it")
+    pending = [k for k in subdirs.get(spk, []) if k not in trashed_so_far]
+    if pending:
+        err(f"{len(pending)} folder(s) below it are not trashed earlier in this manifest")
+    if item["atomic_root"] or item["under_atomic"]:
+        err("folder is or lies inside an atomic unit")
+    if item["owned_by_me"] == 0:
+        err("folder not owned by you: trashing it is not yours to do")
+    if item["can_move"] == 0:
+        err("Drive reports you cannot change this folder")
+    return {"src": src, "src_key": item["key"], "kind": "dir",
+            "src_parent_key": item["parent_key"], "files": 0, "bytes": 0,
+            "keep_key": None,
+            "expect": {"ino": item["ino"], "size": item["size"], "mtime": item["mtime"],
+                       "name": item["name"], "md5": None}}
+
+
 def is_inside(child_pk: str, anc_pk: str) -> bool:
     return bool(anc_pk) and g.is_within(child_pk, anc_pk)
 
@@ -290,7 +333,8 @@ def main(argv=None) -> int:
           f"files_affected={sum(p.get('files', 0) for p in moves)} "
           f"bytes_affected={sum(p.get('bytes', 0) for p in moves)}")
     if trash:
-        print(f"trash={len(trash)} bytes_trashed={sum(p['bytes'] for p in trash)}")
+        print(f"trash={len(trash)} (folders={sum(1 for p in trash if p['kind'] == 'dir')}) "
+              f"bytes_trashed={sum(p['bytes'] for p in trash)}")
     for e in errors[:100]:
         print("ERROR", e)
     for w in warns[:50]:

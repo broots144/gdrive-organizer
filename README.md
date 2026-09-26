@@ -90,6 +90,12 @@ names its `keep_key`; `validate` refuses a trash whose keep copy is missing, dif
 or moved in the same manifest, and `apply` re-checks both copies against Drive before acting.
 Run dedupe on a fresh index, after any reorganization has finished.
 
+Empty folders (for example the shells a merge leaves behind) go the same way:
+`scripts/empty_dirs_to_plan.py --policy private/dedupe.py` lists every folder with nothing but
+folders below it, innermost first, skipping `NEVER_TRASH` areas and the `KEEP_EMPTY` folders you
+want to keep. `validate` checks each against the index and `apply` asks Drive right before acting
+that the folder still has no live children.
+
 ### Writing rules
 
 A rules file is plain Python defining `RULES`: each rule is a SQL `WHERE` clause over the `items`
