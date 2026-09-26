@@ -8,6 +8,9 @@
   # undo everything this journal recorded, newest first
   gdrive-organizer apply ... --undo --execute --confirm-sha <sha256>
 
+trash (exact duplicates only, see validate) goes to Drive's trash, never a permanent delete; undo
+un-trashes it. Drive empties its trash after 30 days.
+
 Honest semantics: there is no cross-item atomicity. Each op is individually atomic (local
 rename(2), or one Drive files.update), and the journal is write-ahead (intent, fsync, act, done,
 fsync), so a crash leaves at most one op in doubt, which the next run reconciles by inspection.
@@ -102,6 +105,9 @@ class FsBackend:
             raise RuntimeError("post-check: dst inode mismatch")
         return {"src_raw": self.raw[e["src_key"]]}
 
+    def trash(self, e):
+        raise RuntimeError("trash is supported by the drive backend only")
+
     def reconcile(self, e, rec):
         """An op without done (crash, or an error after acting): decide from the filesystem
         whether it happened. Returns (verdict, undo info for a done record)."""
@@ -177,6 +183,24 @@ class DriveBackend:
         return {"old_parent": old_pid, "new_parent": new_pid,
                 "old_name": cur["name"], "new_name": res["name"]}
 
+    def trash(self, e):
+        """Move one exact duplicate to Drive's trash after re-checking both copies live."""
+        fid = e["src_key"]
+        fields = "id,name,parents,trashed,md5Checksum,size"
+        cur = self.gd.call(self.svc.files().get(fileId=fid, fields=fields))
+        keep = self.gd.call(self.svc.files().get(fileId=e["keep_key"], fields=fields))
+        if cur.get("trashed"):
+            raise RuntimeError("drift: src is already trashed")
+        if cur.get("parents") != [e["src_parent_key"]]:
+            raise RuntimeError("drift: src parent changed since indexing")
+        if not cur.get("md5Checksum") or cur.get("md5Checksum") != e["expect"]["md5"]:
+            raise RuntimeError("drift: src content changed since indexing")
+        if keep.get("trashed") or keep.get("md5Checksum") != cur.get("md5Checksum") or \
+                str(keep.get("size")) != str(cur.get("size")):
+            raise RuntimeError("the copy to keep is gone, trashed or no longer identical")
+        self.gd.call(self.svc.files().update(fileId=fid, body={"trashed": True}, fields="id"))
+        return {"trashed": True}
+
     def reconcile(self, e, rec):
         """An op without done (crash, or a timeout after Drive applied it): decide from Drive
         whether it happened. Returns (verdict, undo info for a done record)."""
@@ -191,6 +215,12 @@ class DriveBackend:
                 self.created[g.pkey(e["dst"])] = found[0]["id"]
                 return "done", {"new_id": found[0]["id"], "parent": pid}
             return ("redo", {}) if not found else ("halt", {})
+        if e["op"] == "trash":
+            cur = self.gd.call(self.svc.files().get(fileId=e["src_key"],
+                                                    fields="parents,trashed"))
+            if cur.get("trashed"):
+                return "done", {"trashed": True}
+            return ("redo", {}) if cur.get("parents") == [e["src_parent_key"]] else ("halt", {})
         cur = self.gd.call(self.svc.files().get(fileId=e["src_key"], fields="name,parents"))
         new_pid = self.folder_id(g.parent_of(e["dst"]))
         new_name = e["dst"].rsplit("/", 1)[-1]
@@ -205,6 +235,10 @@ class DriveBackend:
         return "halt", {}
 
     def undo(self, rec):
+        if rec["op"] == "trash":
+            self.gd.call(self.svc.files().update(fileId=rec["src_key"], body={"trashed": False},
+                                                 fields="id"))
+            return
         if rec["op"] == "mkdir":
             kids = self.gd.call(self.svc.files().list(
                 q=f"'{rec['new_id']}' in parents and trashed = false", fields="files(id)",
@@ -308,7 +342,7 @@ def main(argv=None) -> int:
         journal.append({"i": e["i"], "state": "intent", "op": e["op"], "dst": e["dst"],
                         "src": e.get("src"), "src_key": e.get("src_key")})
         try:
-            extra = be.mkdir(e) if e["op"] == "mkdir" else be.move(e)
+            extra = {"mkdir": be.mkdir, "move": be.move, "trash": be.trash}[e["op"]](e)
         except Exception as ex:
             journal.append({"i": e["i"], "state": "failed", "err": repr(ex)})
             raise SystemExit(f"op {e['i']} failed: {ex!r}. Journal: {jpath}")

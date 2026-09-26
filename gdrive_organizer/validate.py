@@ -7,8 +7,13 @@ Manifest: JSON Lines, applied in order. Paths are relative to My Drive, as shown
   {"op": "mkdir", "dst": "Archive/Homelab"}
   {"op": "move",  "src": "old-backups/proxmox-2021", "dst": "Archive/Homelab/proxmox-2021"}
   {"op": "move",  "src": "Scan_001.pdf", "src_key": "<id from index>", "dst": "Reference/Vehicles/title.pdf"}
+  {"op": "trash", "src": "Archive/dupes/scan.pdf", "src_key": "<id>", "keep_key": "<id of the copy that stays>"}
 Optional per-op "override": ["recent", "sensitive", "not_owned"] makes an exception explicit and
 auditable instead of a global flag.
+
+trash is the only removal op and exists for exact duplicates: Drive's trash (recoverable for 30
+days, and undo un-trashes). It is refused unless keep_key names another indexed file with the same
+non-empty md5 and size that this manifest neither trashes nor moves out from under the check.
 
 Rules enforced (errors block execution):
   * nothing touches protected ground: the folder, anything inside it, any ANCESTOR of it
@@ -23,6 +28,7 @@ Rules enforced (errors block execution):
   * sensitive-looking names, items not owned by you, items Drive says you cannot move
   * name validity: <=255 UTF-8 bytes, no slash/NUL/control chars/colon, no edge whitespace
   * Google pointer files (.gdoc etc) keep their extension
+  * trash: files only (no folders), a byte-identical keep_key copy must survive the manifest
 """
 from __future__ import annotations
 
@@ -82,10 +88,15 @@ def validate(db, cfg, ops):
     src_pks = set()
     errors, warns, plan = [], [], []
 
-    # pass 1: collect sources for the disjointness check
+    # pass 1: collect sources for the disjointness check, and every key this manifest trashes
+    trashed_keys, move_pks = set(), set()
     for op in ops:
-        if op.get("op") == "move" and "src" in op:
+        if op.get("op") in ("move", "trash") and "src" in op:
             src_pks.add(g.pkey(op["src"]))
+        if op.get("op") == "move" and "src" in op:
+            move_pks.add(g.pkey(op["src"]))
+        if op.get("op") == "trash" and op.get("src_key"):
+            trashed_keys.add(op["src_key"])
 
     for i, op in enumerate(ops):
         tag = f"line {op['_line']}"
@@ -98,6 +109,13 @@ def validate(db, cfg, ops):
         def err(msg):
             errors.append(f"{tag}: {msg}")
 
+        if kind == "trash":
+            entry = validate_trash(op, err, by_key, by_pk, guard, recent, over, trashed_keys,
+                                   src_pks, move_pks)
+            if entry is not None and len(errors) == e0:
+                entry.update(i=i, op="trash", line=op["_line"], dst="")
+                plan.append(entry)
+            continue
         if kind not in ("mkdir", "move"):
             err(f"unknown op {kind!r}")
             continue
@@ -199,6 +217,58 @@ def validate(db, cfg, ops):
     return errors, warns, plan
 
 
+def validate_trash(op, err, by_key, by_pk, guard, recent, over, trashed_keys, src_pks,
+                   move_pks):
+    """Checks for one trash op. Returns the plan entry, or None after reporting errors."""
+    src = g.nfc(op.get("src", "")).strip("/")
+    spk = g.pkey(src)
+    item = by_key.get(op.get("src_key") or "")
+    if item is None or item["pathkey"] != spk:
+        err("trash needs src and a matching src_key")
+        return None
+    v = guard.path_violation(src)
+    if v:
+        err(f"src {v}")
+    for a in ancestors(spk):
+        if a in src_pks:
+            err("src lies inside another source of this manifest")
+            break
+    if item["kind"] not in ("file", "gdoc"):
+        err("trash applies to files only, never folders, shortcuts or bundles")
+    if item["under_atomic"]:
+        err(f"src is inside atomic unit '{item['under_atomic']}'")
+    if item["sensitive"] and "sensitive" not in over:
+        err("src has a sensitive-looking name (override: sensitive)")
+    if item["owned_by_me"] == 0:
+        err("src not owned by you: trashing it is not yours to do")
+    if (item["mtime"] or 0) > recent and "recent" not in over:
+        err("file modified recently (override: recent)")
+    keep = by_key.get(op.get("keep_key") or "")
+    if keep is None:
+        err("keep_key not found: a trash op must name the copy that stays")
+    else:
+        if keep["key"] == item["key"]:
+            err("keep_key is the src itself")
+        if not item["md5"] or keep["md5"] != item["md5"] or keep["size"] != item["size"]:
+            err("keep_key is not byte-identical (md5 and size must match and be present)")
+        if not item["size"]:
+            err("empty files are not deduplicated")
+        if keep["key"] in trashed_keys:
+            err("keep_key is itself trashed by this manifest")
+        if keep["kind"] not in ("file", "gdoc"):
+            err("keep_key is not a file")
+        if guard.path_violation(keep["path"]):
+            err("keep_key lies on protected ground")
+        # by ID, not path: Drive allows identical names side by side in one folder
+        if any(a in move_pks for a in [keep["pathkey"]] + list(ancestors(keep["pathkey"]))):
+            err("keep_key is moved by this manifest; dedupe in a separate manifest")
+    return {"src": src, "src_key": item["key"], "kind": item["kind"],
+            "src_parent_key": item["parent_key"], "files": 1, "bytes": item["size"] or 0,
+            "keep_key": op.get("keep_key"),
+            "expect": {"ino": item["ino"], "size": item["size"], "mtime": item["mtime"],
+                       "name": item["name"], "md5": item["md5"]}}
+
+
 def is_inside(child_pk: str, anc_pk: str) -> bool:
     return bool(anc_pk) and g.is_within(child_pk, anc_pk)
 
@@ -215,9 +285,12 @@ def main(argv=None) -> int:
     errors, warns, plan = validate(db, cfg, ops)
     moves = [p for p in plan if p["op"] == "move"]
     print(f"ops={len(ops)} valid={len(plan)} errors={len(errors)} warnings={len(warns)}")
+    trash = [p for p in plan if p["op"] == "trash"]
     print(f"mkdir={sum(1 for p in plan if p['op'] == 'mkdir')} move={len(moves)} "
           f"files_affected={sum(p.get('files', 0) for p in moves)} "
           f"bytes_affected={sum(p.get('bytes', 0) for p in moves)}")
+    if trash:
+        print(f"trash={len(trash)} bytes_trashed={sum(p['bytes'] for p in trash)}")
     for e in errors[:100]:
         print("ERROR", e)
     for w in warns[:50]:

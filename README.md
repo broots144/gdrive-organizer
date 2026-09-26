@@ -20,9 +20,11 @@ The assistant only ever sees aggregate reports and counts.
 - **Journaled execution with undo**: write-ahead journal, crash reconciliation, sha-pinned
   manifest, ID-based undo. Drive moves never overwrite; local renames use `RENAME_EXCL`.
 
-**It never deletes your files.** Manifests contain only `mkdir` and `move`. The one exception is
-undo: it trashes folders the manifest created, and only if they are empty again (Drive keeps
-trash for 30 days). Deleting stale backups or duplicates is left to you, later, on purpose.
+**Moves never delete.** Reorganization manifests contain only `mkdir` and `move`. Removal is a
+separate, opt-in step for exact duplicates only (below): `trash` ops that send a file to Drive's
+trash (recoverable for 30 days) and must name a byte-identical copy that stays, which `validate`
+and `apply` both check. Undo un-trashes; it also trashes folders a manifest created, only if they
+are empty again.
 
 Why not just walk `~/Library/CloudStorage/...`? On current macOS that mount forces whole-file
 downloads and has no command-line eviction. See [docs/macos-fileprovider-notes.md](docs/macos-fileprovider-notes.md).
@@ -72,6 +74,21 @@ gdrive-organizer apply ... --execute --confirm-sha <sha> --undo                 
 # an op failed (e.g. a network timeout)? rerun with --retry-failed: it first checks Drive and
 # records the op as done if the change already landed, instead of doing it twice
 ```
+
+### Removing exact duplicates
+
+```bash
+cp examples/dedupe.example.py private/dedupe.py                        # edit it
+python3 scripts/dupes_to_plan.py --db private/index.sqlite --config private/config.json --policy private/dedupe.py --out private/dedupe.jsonl
+gdrive-organizer validate --db private/index.sqlite --config private/config.json --manifest private/dedupe.jsonl
+```
+
+Only files with the same Drive `md5Checksum` and size count (Google Docs and empty files never
+do). The policy says which copy to keep (`KEEP_ORDER`, `LAST`) and where nothing may be trashed
+(`NEVER_TRASH`: backups, software trees, code, app landing folders, curated packets). Every op
+names its `keep_key`; `validate` refuses a trash whose keep copy is missing, different, trashed
+or moved in the same manifest, and `apply` re-checks both copies against Drive before acting.
+Run dedupe on a fresh index, after any reorganization has finished.
 
 ### Writing rules
 
