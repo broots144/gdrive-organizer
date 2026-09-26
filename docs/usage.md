@@ -46,7 +46,7 @@ dict(id="finance", where="i.depth=0 AND i.kind='dir' AND i.pathkey IN ('taxes','
 ```
 
 ```bash
-python3 scripts/rules_to_plan.py --db private/index.sqlite --config private/config.json --rules private/rules.py --out private/plan.jsonl
+gdrive-organizer plan --db private/index.sqlite --config private/config.json --rules private/rules.py --out private/plan.jsonl
 gdrive-organizer validate --db private/index.sqlite --config private/config.json --manifest private/plan.jsonl
 ```
 
@@ -96,7 +96,7 @@ gdrive-organizer apply ... --execute --confirm-sha <sha> --undo                 
 
 ```bash
 cp examples/dedupe.example.py private/dedupe.py        # edit KEEP_ORDER, LAST, NEVER_TRASH
-python3 scripts/dupes_to_plan.py --db private/index.sqlite --config private/config.json --policy private/dedupe.py --out private/dedupe.jsonl
+gdrive-organizer dedupe --db private/index.sqlite --config private/config.json --policy private/dedupe.py --out private/dedupe.jsonl
 gdrive-organizer validate --db private/index.sqlite --config private/config.json --manifest private/dedupe.jsonl
 ```
 
@@ -110,7 +110,7 @@ gdrive-organizer validate --db private/index.sqlite --config private/config.json
 ## 6. Remove empty folders (optional)
 
 ```bash
-python3 scripts/empty_dirs_to_plan.py --db private/index.sqlite --config private/config.json --policy private/dedupe.py --out private/empty-dirs.jsonl
+gdrive-organizer empty-dirs --db private/index.sqlite --config private/config.json --policy private/dedupe.py --out private/empty-dirs.jsonl
 ```
 
 Lists every folder with nothing but folders below it, innermost first, skipping `NEVER_TRASH` areas

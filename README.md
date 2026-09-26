@@ -8,9 +8,15 @@ Reorganize a messy Google Drive with an AI assistant (such as Claude Code) **wit
 assistant your files, and without anything happening that you did not review and cannot undo.**
 
 You and the assistant look at an aggregate report of your Drive, agree on a folder layout, and
-write it down as **rules**. A script compiles the rules into a **manifest** of moves, a validator
+write it down as **rules**. The tool compiles the rules into a **manifest** of moves, a validator
 rejects anything unsafe, and **you** run the executor yourself. Every step is journaled, and the
 whole thing can be rolled back.
+
+![Demo: index, report, rules, plan, validate, execute and undo on a fake Drive](docs/demo.svg)
+
+**Try it in a minute, no Google account needed:** `pip install -e .` in a clone, then
+`bash examples/demo/run.sh`. It builds a fake "My Drive" in a temp folder, reorganizes it and
+undoes everything (the recording above).
 
 ## Why
 
@@ -67,7 +73,7 @@ mkdir -p private && cp examples/config.example.json private/config.json
    ```
 4. **Plan** with your assistant: rules in `private/rules.py`, then
    ```bash
-   python3 scripts/rules_to_plan.py --db private/index.sqlite --config private/config.json --rules private/rules.py --out private/plan.jsonl
+   gdrive-organizer plan --db private/index.sqlite --config private/config.json --rules private/rules.py --out private/plan.jsonl
    gdrive-organizer validate --db private/index.sqlite --config private/config.json --manifest private/plan.jsonl
    ```
 5. **Execute yourself** (dry run unless `--execute`; the sha comes from `validate`):

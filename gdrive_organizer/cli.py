@@ -11,6 +11,9 @@ COMMANDS = {
     "index-fs": ("index_fs", "Phase 1 fallback: index the local Drive for desktop mount, metadata only"),
     "report": ("report", "Aggregate report over an index (the only thing an LLM should read)"),
     "peek": ("peek", "Phase 2: bounded content snippets for ambiguous files via the Drive API"),
+    "plan": ("plan", "Compile a rules file into a move manifest (collisions, merges, gates)"),
+    "dedupe": ("dedupe", "Exact duplicates (same md5 and size) to a trash manifest"),
+    "empty-dirs": ("empty_dirs", "Empty folders to a trash manifest, innermost first"),
     "validate": ("validate", "Phase 3 gate: validate a move manifest against the index"),
     "apply": ("apply", "Phase 4: execute or undo a validated manifest (dry run by default)"),
 }

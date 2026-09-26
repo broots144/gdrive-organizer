@@ -1,6 +1,6 @@
-"""Example rules for scripts/rules_to_plan.py. Copy to private/rules.py and edit.
+"""Example rules for `gdrive-organizer plan`. Copy to private/rules.py and edit.
 
-  python3 scripts/rules_to_plan.py --db private/index.sqlite --config private/config.json \
+  gdrive-organizer plan --db private/index.sqlite --config private/config.json \
       --rules private/rules.py --out private/plan.jsonl
   gdrive-organizer validate --db private/index.sqlite --config private/config.json \
       --manifest private/plan.jsonl
