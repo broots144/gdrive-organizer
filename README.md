@@ -1,166 +1,126 @@
 # gdrive-organizer
 
-Guarded, reversible reorganization of a large Google Drive (My Drive), built to be driven by a
-human with an AI assistant such as Claude Code, without ever handing the assistant your files.
+[![tests](https://github.com/broots144/gdrive-organizer/actions/workflows/test.yml/badge.svg)](https://github.com/broots144/gdrive-organizer/actions/workflows/test.yml)
+[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+![python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue.svg)
 
-You describe the target layout as **rules**. The tool turns them into a **manifest** of moves, a
-validator rejects anything unsafe, and **you** run the journaled executor, which can undo itself.
-The assistant only ever sees aggregate reports and counts.
+Reorganize a messy Google Drive with an AI assistant (such as Claude Code) **without handing the
+assistant your files, and without anything happening that you did not review and cannot undo.**
 
-- **Metadata-only index** through the Drive API (`drive.metadata.readonly`). No downloads, no
-  local hydration, and exact duplicates found server side from `md5Checksum`.
-- **Protected folders** excluded by Drive ID and name *before* they are listed. Their contents are
-  never requested, and no operation may touch them or move any of their ancestors.
-- **Aggregate reports** are the only thing the assistant reads. 50,000 raw paths are over a
-  million tokens; the report is a few hundred lines, with sensitive-looking names masked.
-- **Rules, not rows**: SQL predicates over the index plus destination templates, compiled into a
-  manifest by `scripts/rules_to_plan.py`. Reviewable, reproducible, and rerunnable.
-- **Validated manifests**: collisions, atomic units (git repos, bundles, backup sets), live backup
-  targets, files you don't own, and protected paths are all rejected before anything runs.
-- **Journaled execution with undo**: write-ahead journal, crash reconciliation, sha-pinned
-  manifest, ID-based undo. Drive moves never overwrite; local renames use `RENAME_EXCL`.
+You and the assistant look at an aggregate report of your Drive, agree on a folder layout, and
+write it down as **rules**. A script compiles the rules into a **manifest** of moves, a validator
+rejects anything unsafe, and **you** run the executor yourself. Every step is journaled, and the
+whole thing can be rolled back.
 
-**Moves never delete.** Reorganization manifests contain only `mkdir` and `move`. Removal is a
-separate, opt-in step for exact duplicates only (below): `trash` ops that send a file to Drive's
-trash (recoverable for 30 days) and must name a byte-identical copy that stays, which `validate`
-and `apply` both check. Undo un-trashes; it also trashes folders a manifest created, only if they
-are empty again.
+## Why
 
-Why not just walk `~/Library/CloudStorage/...`? On current macOS that mount forces whole-file
-downloads and has no command-line eviction. See [docs/macos-fileprovider-notes.md](docs/macos-fileprovider-notes.md).
+Years of Drive usage leave a root folder full of loose files, an old Dropbox dump, three copies of
+everything and folders nobody can explain. An LLM is good at proposing a taxonomy, but letting one
+loose on your Drive is a bad idea: it would read private files, guess per file, and act without a
+safety net. This tool splits the job so each side does what it is good at:
 
-> Status: alpha. Tested end to end on fake trees (Linux and macOS CI) and against a mocked Drive
-> API. Start with a canary of 20 operations and check the result in the Drive web UI.
+| The assistant | The tool | You |
+|---|---|---|
+| reads counts and aggregates, never raw file lists or contents (unless you allow bounded snippets) | indexes metadata only, validates every operation, journals and undoes | approve the plan, run `--execute`, keep the journal |
+
+## What it guarantees
+
+- **Protected folders are never seen.** Excluded by Drive ID and name *before* listing: their
+  contents are never requested, never indexed, and no operation may touch them or move a parent.
+- **Metadata only by default.** Indexing uses the `drive.metadata.readonly` scope. Content is read
+  only by the optional `peek` command, through the API, as short snippets, skipping sensitive names.
+- **Nothing runs unvalidated.** `apply` re-validates the manifest and refuses to run unless you pass
+  the manifest's sha256 from `validate`, so what executes is exactly what you reviewed.
+- **Moves never overwrite or delete.** Reorganization is `mkdir` and `move` only. Collisions are
+  resolved, never clobbered; files are never renamed.
+- **Removal is opt-in and duplicate-only.** `trash` sends a file to Drive's trash (30 days) only if
+  a byte-identical copy (same md5 and size) stays; empty folders only if Drive confirms they are
+  empty. Nothing is ever permanently deleted by this tool.
+- **Everything is reversible.** A write-ahead journal records each operation by Drive ID;
+  `--undo` puts files back and un-trashes. A failed or timed-out operation is reconciled against
+  Drive before any retry, so nothing happens twice.
+
+Details and limits: [docs/safety-model.md](docs/safety-model.md).
+
+> **Status: alpha.** Tested in CI on Linux and macOS against a mocked Drive API and fake trees,
+> and used on one real My Drive of about 22,000 items (5 rounds, 671 operations, including a
+> network timeout that led to the reconcile-before-retry fix). Start with a 20-operation canary.
 > Not affiliated with Google.
 
-## Install
+## Quickstart
 
 ```bash
 git clone https://github.com/broots144/gdrive-organizer && cd gdrive-organizer
 python3 -m venv .venv && . .venv/bin/activate
 pip install -e ".[all]"
-bash scripts/install_hooks.sh                                             # leak check on commit
-mkdir -p private && cp examples/config.example.json private/config.json   # edit it
+bash scripts/install_hooks.sh                 # blocks commits that contain your private strings
+mkdir -p private && cp examples/config.example.json private/config.json
 ```
 
-Everything personal lives in `private/`, which is gitignored: your config (protected folder
-names and IDs), OAuth client and tokens, the index, reports, rules, manifests and journals.
+1. **OAuth client** (once, about 20 minutes): create your own Google Cloud OAuth client and save it
+   as `private/client_secret.json`. Step by step: [docs/oauth-setup.md](docs/oauth-setup.md).
+2. **Protect** what must never be touched: put folder names and IDs in `private/config.json`.
+3. **Index and report:**
+   ```bash
+   gdrive-organizer index-drive --db private/index.sqlite --config private/config.json --client-secret private/client_secret.json
+   gdrive-organizer report --db private/index.sqlite --config private/config.json > private/report.txt
+   ```
+4. **Plan** with your assistant: rules in `private/rules.py`, then
+   ```bash
+   python3 scripts/rules_to_plan.py --db private/index.sqlite --config private/config.json --rules private/rules.py --out private/plan.jsonl
+   gdrive-organizer validate --db private/index.sqlite --config private/config.json --manifest private/plan.jsonl
+   ```
+5. **Execute yourself** (dry run unless `--execute`; the sha comes from `validate`):
+   ```bash
+   gdrive-organizer apply --backend drive --db private/index.sqlite --config private/config.json --manifest private/plan.jsonl
+   gdrive-organizer apply ... --execute --confirm-sha <sha256> --max-ops 20      # canary first
+   gdrive-organizer apply ... --execute --confirm-sha <sha256>                   # the rest
+   gdrive-organizer apply ... --execute --confirm-sha <sha256> --undo            # roll back
+   ```
 
-OAuth (once, about 20 minutes): Google Cloud console, new project, enable Drive API, OAuth
-consent screen (External, Testing, add yourself), OAuth client ID of type Desktop app. Save the
-JSON as `private/client_secret.json`. Each phase gets its own least-privilege token; `apply`
-asks for write access the first time you execute.
+Everything personal (config, OAuth files, index, reports, rules, manifests, journals) lives in
+`private/`, which is gitignored.
 
-## Workflow
-
-```bash
-# 1. index (metadata only) and report
-gdrive-organizer index-drive --db private/index.sqlite --config private/config.json --client-secret private/client_secret.json
-gdrive-organizer report      --db private/index.sqlite --config private/config.json > private/report.txt
-# optional: bounded content snippets for ambiguous names (never sensitive or protected ones);
-# --max-depth 0 limits it to the My Drive top level, --only-keys FILE to exact Drive IDs
-gdrive-organizer peek        --db private/index.sqlite --config private/config.json --client-secret private/client_secret.json --limit 300
-
-# 2. rules -> manifest -> validate (repeat until zero errors)
-cp examples/rules.example.py private/rules.py                          # edit it
-python3 scripts/rules_to_plan.py --db private/index.sqlite --config private/config.json --rules private/rules.py --out private/plan.jsonl
-gdrive-organizer validate    --db private/index.sqlite --config private/config.json --manifest private/plan.jsonl
-
-# 3. execute yourself, in a terminal (dry run unless --execute)
-gdrive-organizer apply --backend drive --db private/index.sqlite --config private/config.json --manifest private/plan.jsonl
-gdrive-organizer apply ... --execute --confirm-sha <sha from validate> --max-ops 20     # canary
-gdrive-organizer apply ... --execute --confirm-sha <sha> --batch 50 --pause 60
-gdrive-organizer apply ... --execute --confirm-sha <sha> --undo                        # roll back
-# an op failed (e.g. a network timeout)? rerun with --retry-failed: it first checks Drive and
-# records the op as done if the change already landed, instead of doing it twice
-```
-
-### Removing exact duplicates
-
-```bash
-cp examples/dedupe.example.py private/dedupe.py                        # edit it
-python3 scripts/dupes_to_plan.py --db private/index.sqlite --config private/config.json --policy private/dedupe.py --out private/dedupe.jsonl
-gdrive-organizer validate --db private/index.sqlite --config private/config.json --manifest private/dedupe.jsonl
-```
-
-Only files with the same Drive `md5Checksum` and size count (Google Docs and empty files never
-do). The policy says which copy to keep (`KEEP_ORDER`, `LAST`) and where nothing may be trashed
-(`NEVER_TRASH`: backups, software trees, code, app landing folders, curated packets). Every op
-names its `keep_key`; `validate` refuses a trash whose keep copy is missing, different, trashed
-or moved in the same manifest, and `apply` re-checks both copies against Drive before acting.
-Run dedupe on a fresh index, after any reorganization has finished.
-
-Empty folders (for example the shells a merge leaves behind) go the same way:
-`scripts/empty_dirs_to_plan.py --policy private/dedupe.py` lists every folder with nothing but
-folders below it, innermost first, skipping `NEVER_TRASH` areas and the `KEEP_EMPTY` folders you
-want to keep. `validate` checks each against the index and `apply` asks Drive right before acting
-that the folder still has no live children.
-
-### Writing rules
-
-A rules file is plain Python defining `RULES`: each rule is a SQL `WHERE` clause over the `items`
-table plus a destination template. First match wins. See
-[examples/rules.example.py](examples/rules.example.py) for the columns and a full example.
-
-```python
-dict(id="finance", where="i.depth=0 AND i.kind='dir' AND i.pathkey IN ('taxes','receipts')",
-     dst="finance/{lh}")      # {lh}: folder name lowercase-hyphenated; files are never renamed
-```
-
-What `rules_to_plan.py` does for you:
-
-- Moves the **outermost** match only, so sources never overlap and units are never split.
-- Leaves in place anything protected, not owned by you, not movable, inside an atomic unit, a
-  dot entry, or modified within `recent_days` (a live sync or backup target).
-- Adds `"override": ["sensitive"]` to each sensitive-named source, so every exception is visible
-  in the manifest instead of hidden behind a global flag.
-- Resolves **collisions** (two sources for one target, or a target that already exists with
-  different case): the target becomes an `mkdir` and the sources merge their contents into it.
-  Their emptied shells stay in place. Files are never renamed: an identical colliding file goes
-  to `archive/duplicates`, a different one with the same name to a `same-name-2/` folder beside
-  the first. `STRIP_NAMES` lists the only exceptions (names with edge whitespace).
-- Optionally empties a **dump folder** (`DUMP = "old dropbox"`): its colliding children are moved
-  whole into `<target>/from-old-dropbox` so the dump really ends up empty.
-- Prints counts per rule and a live, archive and left-in-place split. It never prints paths.
-
-Guidance that matters more than any flag:
-
-- Move **folders**, not files, wherever a folder is coherent. One folder move is one API call.
-- Keep app landing folders (scanner targets, "Saved from Chrome") where the app expects them.
-- End a dump-folder rule set with a catch-all to `archive/unsorted/{orig}`: uncertain items stay
-  findable at their original relative path instead of being guessed into the wrong place.
+**More:** writing rules, emptying a dump folder, removing duplicates and empty folders, content
+peeks and the local-mount fallback are in [docs/usage.md](docs/usage.md).
 
 ## Using it with Claude Code
 
-- `.claude/settings.json` (committed) turns on the Bash sandbox, denies all writes under
-  `~/Library/CloudStorage` and reads of the Drive for desktop cache, and blocks the Read tool on the
-  mount, OAuth files and the quarantine list. The assistant cannot move anything, even by mistake.
-- `python3 scripts/make_local_settings.py` adds OS-level denies for **your** protected folder
-  names to `.claude/settings.local.json`, which is gitignored.
-- `CLAUDE.md` tells the assistant the rules: read only reports, write rules not rows, never run
-  `apply --execute`. You run execution yourself in a terminal.
-- A good first prompt: *"Read CLAUDE.md. Run the report, summarize it, propose a taxonomy, write
-  it as rules in private/rules.py, generate and validate the plan, and show me counts."*
-- `gh` is Go based and can fail TLS inside the macOS sandbox. Run GitHub commands yourself, or
-  with the `!` prefix in Claude Code, which runs outside the sandbox.
+The repo is set up so an assistant session is safe by default:
 
-## Local mount fallback
+- `.claude/settings.json` turns on the Bash sandbox, denies writes under `~/Library/CloudStorage`
+  and reads of the Drive for desktop cache, and blocks reading OAuth files and the quarantine list.
+- `python3 scripts/make_local_settings.py` adds OS-level denies for **your** protected folder names
+  to `.claude/settings.local.json` (gitignored).
+- [CLAUDE.md](CLAUDE.md) gives the assistant its rules: read reports not rows, write rules not
+  per-file decisions, never run `apply --execute`.
 
-No OAuth? `gdrive-organizer index-fs --root ".../My Drive"` indexes the mount by metadata only
-(pruning protected names before any syscall, aborting on permission errors), and
-`apply --backend fs` renames locally without clobbering. You lose ownership, checksums and
-shortcut targets, and every rename goes through the Drive for desktop sync queue.
+A good first prompt: *"Read CLAUDE.md. Run the report, summarize it, propose a taxonomy of at most
+six top-level folders plus an archive, write it as rules in private/rules.py, generate and
+validate the plan, and show me counts and the largest moves."*
 
-## Contributing
+## Limitations
 
-```bash
-python3 tests/test_fs_local.py && python3 tests/test_drive_mock.py && python3 tests/test_rules_to_plan.py
-```
+- **My Drive only.** Shared drives and "Shared with me" items are not indexed or moved.
+- **Google Docs, Sheets and Slides have no checksum**, so they are never treated as duplicates.
+- **Your own OAuth client is required.** There is no hosted app; see the setup guide.
+- **macOS is the primary platform.** The Drive API path works anywhere Python runs; the
+  local-mount fallback is macOS-specific.
 
-The drive mock test needs the `[api]` extra. `bash scripts/install_hooks.sh` installs the leak
-check (`scripts/leak_check.py`), which blocks commits containing strings from your private config
-or `.private-patterns` (one literal per line: your name, family names, employers, email) and
-commits made with a non-noreply git email. Please never paste real indexes, reports or journals
-into issues; see [SECURITY.md](SECURITY.md).
+## Troubleshooting
 
-MIT licensed.
+| Symptom | What to do |
+|---|---|
+| `op N failed: TimeoutError(...)` | Rerun the same command with `--retry-failed`. It checks Drive first and records the op as done if the change already landed. |
+| `drift: ... changed since indexing` | The item changed after you indexed. Re-index and regenerate the plan. |
+| "Google hasn't verified this app" | Expected for a personal OAuth client in Testing mode: choose Advanced, then continue. |
+| Sign-in prompt again after a week | Testing-mode refresh tokens expire after 7 days (Google policy); the tool asks you to sign in again. |
+| `gh` fails with a TLS error inside Claude Code | The macOS sandbox blocks Go's certificate check; run `gh` yourself or with the `!` prefix. |
+
+## Contributing and security
+
+Contributions are welcome: see [CONTRIBUTING.md](CONTRIBUTING.md). This tool changes real Drives,
+so a bug in the guard, validator or executor is a security issue: report it privately as described
+in [SECURITY.md](SECURITY.md). Never paste real indexes, reports or journals into issues.
+
+MIT licensed. See [CHANGELOG.md](CHANGELOG.md) for what changed.

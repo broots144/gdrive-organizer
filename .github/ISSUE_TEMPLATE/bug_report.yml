@@ -1,0 +1,35 @@
+name: Bug report
+description: Something did not work as documented
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Do not paste real file or folder names, indexes, reports, manifests or journals.** Replace
+        names with made-up ones. If the bug could touch a protected folder, trash the wrong file or
+        break undo, report it privately instead (Security tab > Report a vulnerability).
+  - type: input
+    id: command
+    attributes:
+      label: Command
+      description: The command you ran, with paths shortened
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what you expected
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Output (names redacted)
+      render: text
+  - type: input
+    id: env
+    attributes:
+      label: Environment
+      description: OS, Python version, gdrive-organizer version, backend (drive or fs)
+    validations:
+      required: true

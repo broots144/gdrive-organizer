@@ -38,7 +38,8 @@ actual Drive work also happens here, with every personal artifact confined to `p
 - `scripts/dupes_to_plan.py`: exact duplicates to trash ops under a keep/never-trash policy
 - `scripts/empty_dirs_to_plan.py`: empty folders to trash ops, innermost first
 - `examples/`: config, rules and manifest templates to copy into `private/`
-- `tests/`: fake-tree end to end, mocked Drive API, rules generator; `docs/`: FileProvider findings
+- `tests/`: fake-tree end to end, mocked Drive API, rules generator
+- `docs/`: usage, OAuth setup, safety model, FileProvider findings
 
 ## Commands
 

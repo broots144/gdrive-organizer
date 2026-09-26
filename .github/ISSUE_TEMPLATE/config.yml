@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security problem (private)
+    url: https://github.com/broots144/gdrive-organizer/security/advisories/new
+    about: Anything that could touch protected folders, trash the wrong file or break undo.
