@@ -24,7 +24,7 @@ dependencies = []
 
 [project.optional-dependencies]
 api = ["google-api-python-client>=2.100", "google-auth-oauthlib>=1.0"]
-peek = ["pypdf>=3.0", "python-docx>=1.0"]
+peek = ["pypdf>=3.0", "python-docx>=1.2.0"]
 all = ["gdrive-organizer[api,peek]"]
 
 [project.scripts]
