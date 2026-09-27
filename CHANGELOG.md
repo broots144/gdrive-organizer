@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.2 (2026-09-27)
+
+- `peek` bounds what it hands to the PDF and DOCX parsers, since peeked files can come
+  from anyone who shares a folder with you: the download is range-capped at `--max-bytes`
+  whatever the index said, a DOCX that would expand past 64 MB or compress more than 200x
+  (a zip bomb) is refused, and each parse gets 20 seconds. A refusal is recorded as that
+  file's error and the run continues. `pypdf>=6.0` (bounded stream decompression).
+
 ## 0.3.1 (2026-09-26)
 
 Security fixes from an audit of the assistant boundary.
