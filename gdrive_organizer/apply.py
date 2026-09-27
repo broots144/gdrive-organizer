@@ -65,6 +65,27 @@ def last_state(records):
     return st
 
 
+def check_journal(recs, sha, plan):
+    """The journal is not covered by --confirm-sha, so treat it as untrusted input: it must
+    belong to this manifest, and each record must match the reviewed op it claims to be.
+    Values a record adds (Drive IDs, old names) are verified again by the backend before use."""
+    by_i = {e["i"]: e for e in plan}
+    for r in recs:
+        if r.get("state") == "header":
+            if r.get("manifest_sha") != sha:
+                raise SystemExit("journal belongs to a different manifest; refusing to use it")
+            continue
+        e = by_i.get(r.get("i"))
+        if e is None:
+            # Undo may run against a re-indexed Drive where an op no longer validates; the
+            # backend then checks the record against Drive alone.
+            continue
+        if r.get("state") in ("intent", "done") and any(
+                r.get(k) != e.get(k) for k in ("op", "dst", "src", "src_key")):
+            raise SystemExit(f"journal record for op {r.get('i')} does not match the manifest; "
+                             "refusing to use this journal")
+
+
 # ------------------------------------------------------------------ fs backend
 
 class FsBackend:
@@ -121,10 +142,15 @@ class FsBackend:
             return "redo", {}
         return "halt", {}
 
+    def adopt_created(self, rec):
+        pass
+
     def undo(self, rec):
         if rec["op"] == "mkdir":
             os.rmdir(self.ab(rec["dst"]))  # only succeeds if empty
         else:
+            if self.raw.get(rec["src_key"]) != rec["src_raw"]:
+                raise RuntimeError("journal src_raw does not match the index")
             g.rename_excl(self.ab(rec["dst"]), self.ab(rec["src_raw"]))
 
 
@@ -147,11 +173,31 @@ class DriveBackend:
         if pk == "":
             return self.root_id
         if pk in self.created:
-            return self.created[pk]
-        ids = self.dirs.get(pk, [])
-        if len(ids) != 1:
-            raise RuntimeError(f"cannot resolve folder id for dst parent ({len(ids)} matches)")
-        return ids[0]
+            fid = self.created[pk]
+        else:
+            ids = self.dirs.get(pk, [])
+            if len(ids) != 1:
+                raise RuntimeError(f"cannot resolve folder id for dst parent ({len(ids)} matches)")
+            fid = ids[0]
+        if self.guard.is_protected_id(fid):
+            raise RuntimeError("dst parent resolves to a protected folder")
+        return fid
+
+    def _check_created(self, dst, new_id):
+        """A folder ID taken from the journal must be the folder this manifest created: a live
+        folder with the planned name, directly under the planned parent."""
+        if not new_id or self.guard.is_protected_id(new_id):
+            raise RuntimeError("journal names an invalid or protected folder id")
+        pid = self.folder_id(g.parent_of(dst))
+        cur = self.gd.call(self.svc.files().get(fileId=new_id,
+                                                fields="id,name,mimeType,parents,trashed"))
+        if (cur.get("mimeType") != g.FOLDER_MIME or cur.get("trashed")
+                or cur.get("name") != dst.rsplit("/", 1)[-1] or cur.get("parents") != [pid]):
+            raise RuntimeError("journal folder id is not the folder this manifest created")
+
+    def adopt_created(self, rec):
+        self._check_created(rec["dst"], rec.get("new_id"))
+        self.created[g.pkey(rec["dst"])] = rec["new_id"]
 
     def mkdir(self, e):
         pid = self.folder_id(g.parent_of(e["dst"]))
@@ -246,23 +292,49 @@ class DriveBackend:
             return "redo", {}
         return "halt", {}
 
-    def undo(self, rec):
+    def undo(self, rec, e=None):
+        """Reverse one journal record, only if Drive still shows exactly what the record says
+        was done. `e` is the reviewed plan entry, when the manifest still validates."""
+        for fid in (rec.get("src_key"), rec.get("new_id"), rec.get("old_parent"),
+                    rec.get("new_parent")):
+            if self.guard.is_protected_id(fid):
+                raise RuntimeError("journal record names a protected id")
         if rec["op"] == "trash":
+            cur = self.gd.call(self.svc.files().get(fileId=rec["src_key"],
+                                                    fields="id,parents,trashed"))
+            if not cur.get("trashed"):
+                raise RuntimeError("drift: item is no longer in the trash")
+            if e is not None and cur.get("parents") != [e["src_parent_key"]]:
+                raise RuntimeError("drift: trashed item is not in its original folder")
             self.gd.call(self.svc.files().update(fileId=rec["src_key"], body={"trashed": False},
                                                  fields="id"))
             return
         if rec["op"] == "mkdir":
+            self.created.pop(g.pkey(rec["dst"]), None)
+            self._check_created(rec["dst"], rec.get("new_id"))
             kids = self.gd.call(self.svc.files().list(
                 q=f"'{rec['new_id']}' in parents and trashed = false", fields="files(id)",
                 pageSize=1))
             if kids.get("files"):
                 raise RuntimeError("created folder is not empty; leaving it")
             self.gd.call(self.svc.files().update(fileId=rec["new_id"], body={"trashed": True}))
-        else:
-            kw = {"fileId": rec["src_key"], "fields": "id"}
-            if rec["new_parent"] != rec["old_parent"]:
-                kw.update(addParents=rec["old_parent"], removeParents=rec["new_parent"])
-            self.gd.call(self.svc.files().update(body={"name": rec["old_name"]}, **kw))
+            return
+        new_name = rec["dst"].rsplit("/", 1)[-1]
+        if e is not None:
+            if rec.get("old_parent") != e["src_parent_key"] or \
+                    (rec.get("old_name") or "").replace("/", ":") != e["expect"]["name"]:
+                raise RuntimeError("journal record does not match the reviewed move")
+            if rec.get("new_parent") != self.folder_id(g.parent_of(rec["dst"])):
+                raise RuntimeError("journal record does not match the reviewed destination")
+        cur = self.gd.call(self.svc.files().get(fileId=rec["src_key"],
+                                                fields="id,name,parents,trashed"))
+        if cur.get("trashed") or cur.get("parents") != [rec["new_parent"]] or \
+                cur.get("name") != new_name:
+            raise RuntimeError("drift: item is not where this run put it")
+        kw = {"fileId": rec["src_key"], "fields": "id"}
+        if rec["new_parent"] != rec["old_parent"]:
+            kw.update(addParents=rec["old_parent"], removeParents=rec["new_parent"])
+        self.gd.call(self.svc.files().update(body={"name": rec["old_name"]}, **kw))
 
 
 # ------------------------------------------------------------------ main
@@ -277,7 +349,8 @@ def main(argv=None) -> int:
     ap.add_argument("--root", help="fs backend: must match the indexed root")
     ap.add_argument("--allow-any-root", action="store_true", help="tests only")
     ap.add_argument("--client-secret", default="private/client_secret.json")
-    ap.add_argument("--token", default="private/token_write.json")
+    ap.add_argument("--token", help="save the full-access token here for reuse; by default "
+                    "it stays in memory and each run asks you to sign in")
     ap.add_argument("--execute", action="store_true")
     ap.add_argument("--confirm-sha")
     ap.add_argument("--batch", type=int, default=50)
@@ -314,18 +387,28 @@ def main(argv=None) -> int:
             print(f"  ... {len(plan) - 25} more")
         return 0
 
+    if a.backend == "drive" and not a.token and os.path.exists("private/token_write.json"):
+        print("NOTE: private/token_write.json is no longer used; it holds full access to your "
+              "Drive. Delete it (see docs/oauth-setup.md).", flush=True)
     be = (FsBackend(db, guard, a.root, a.allow_any_root) if a.backend == "fs"
           else DriveBackend(db, guard, a.client_secret, a.token))
 
+    recs = journal.read()
+    check_journal(recs, sha, plan)
+
     if a.undo:
-        return run_undo(be, journal, jpath, a)
+        return run_undo(be, journal, jpath, a, plan)
 
     if os.path.exists(jpath + ".undo.jsonl"):
         raise SystemExit("this journal has been undone; use a new --journal path for a fresh run")
-    recs = journal.read()
-    for r in recs:  # rebuild created-folder ids for the drive backend
-        if r.get("state") == "done" and r.get("op") == "mkdir" and r.get("new_id"):
-            getattr(be, "created", {})[g.pkey(r["dst"])] = r["new_id"]
+    if not recs:
+        journal.append({"i": -1, "state": "header", "manifest_sha": sha})
+    for r in recs:  # rebuild created-folder ids, each checked against Drive
+        if r.get("state") == "done" and r.get("op") == "mkdir":
+            try:
+                be.adopt_created(r)
+            except RuntimeError as ex:
+                raise SystemExit(f"journal refused at op {r['i']}: {ex}")
     state = last_state(recs)
     n_this_run = 0
     for e in plan:
@@ -371,17 +454,26 @@ def main(argv=None) -> int:
     return 0
 
 
-def run_undo(be, journal, jpath, a):
+def run_undo(be, journal, jpath, a, plan):
     upath = jpath + ".undo.jsonl"
     uj = Journal(upath)
     undone = {r["i"] for r in uj.read() if r.get("state") == "undone"}
     recs = [r for r in journal.read() if r.get("state") == "done"]
+    by_i = {e["i"]: e for e in plan}
+    if isinstance(be, DriveBackend):
+        # created folders resolve destination parents; each is verified again before its undo
+        for r in recs:
+            if r["op"] == "mkdir" and r.get("new_id") and r["i"] not in undone:
+                be.created[g.pkey(r["dst"])] = r["new_id"]
     n = 0
     for rec in reversed(recs):
         if rec["i"] in undone:
             continue
         try:
-            be.undo(rec)
+            if isinstance(be, DriveBackend):
+                be.undo(rec, by_i.get(rec["i"]))
+            else:
+                be.undo(rec)
         except Exception as ex:
             uj.append({"i": rec["i"], "state": "failed", "err": repr(ex)})
             raise SystemExit(f"undo of op {rec['i']} failed: {ex!r}. Undo journal: {upath}")

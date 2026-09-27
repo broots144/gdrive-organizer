@@ -4,10 +4,16 @@
     "allowUnsandboxedCommands": false,
     "filesystem": {
       "denyRead": [
-        "~/Library/Application Support/Google/DriveFS"
+        "~/Library/Application Support/Google/DriveFS",
+        "./private/client_secret*.json",
+        "./private/token*.json"
       ],
       "denyWrite": [
-        "~/Library/CloudStorage"
+        "~/Library/CloudStorage",
+        "./private/client_secret*.json",
+        "./private/token*.json",
+        "./private/*.journal.jsonl",
+        "./private/*.journal.jsonl.undo.jsonl"
       ]
     }
   },

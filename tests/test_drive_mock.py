@@ -247,6 +247,50 @@ def main():
     assert STATE[arch2].get("trashed") is True
     print("timeout after apply OK: retry reconciled, undo restored everything")
 
+    # the journal is not covered by --confirm-sha: forged or foreign records must be refused
+    with open("plan5.jsonl", "w") as fh:
+        for op in [{"op": "mkdir", "dst": "Archive3"},
+                   {"op": "move", "src": "homelab/proxmox-2021", "dst": "Archive3/proxmox-2021"}]:
+            fh.write(json.dumps(op) + "\n")
+    errs, _, plan5 = validate.validate(g.open_db("d.sqlite"), cfg,
+                                       validate.load_manifest("plan5.jsonl"))
+    assert not errs, errs
+    sha5 = g.sha256_file("plan5.jsonl")
+    mk, mv = plan5
+    header = {"i": -1, "state": "header", "manifest_sha": sha5}
+
+    def forged(name, recs, extra=()):
+        with open(name, "w") as fh:
+            for r in recs:
+                fh.write(json.dumps(r) + "\n")
+        return run("apply", ["--backend", "drive", "--db", "d.sqlite", "--config", "cfg.json",
+                             "--manifest", "plan5.jsonl", "--journal", name, "--execute",
+                             "--confirm-sha", sha5, "--pause", "0", *extra])
+    snapshot = copy.deepcopy(STATE)
+    done_mk = {"i": mk["i"], "state": "done", "op": "mkdir", "dst": "Archive3", "src": None,
+               "src_key": None}
+    rc = forged("j1.jsonl", [header, dict(done_mk, new_id="EMPTY")])  # redirect to old-empty
+    assert "not the folder this manifest created" in str(rc), rc
+    rc = forged("j2.jsonl", [header, dict(done_mk, new_id="LEGALID")])
+    assert "protected" in str(rc), rc
+    rc = forged("j3.jsonl", [dict(header, manifest_sha="0" * 64)])
+    assert "different manifest" in str(rc), rc
+    rc = forged("j4.jsonl", [header, {"i": mv["i"], "state": "done", "op": "move",
+                                      "dst": mv["dst"], "src": mv["src"], "src_key": "S1"}])
+    assert "does not match the manifest" in str(rc), rc
+    fake_move = {"i": mv["i"], "state": "done", "op": "move", "dst": mv["dst"], "src": mv["src"],
+                 "src_key": mv["src_key"], "old_parent": "ROOT", "new_parent": "HL",
+                 "old_name": "proxmox-2021", "new_name": "proxmox-2021"}
+    rc = forged("j5.jsonl", [header, fake_move], ["--undo"])  # a move that never happened
+    assert "undo of op" in str(rc) and "does not match" in str(rc), rc
+    rc = forged("j6.jsonl", [header, dict(fake_move, old_parent="HL")], ["--undo"])
+    assert "undo of op" in str(rc), rc
+    for k, d in snapshot.items():
+        assert STATE[k] == d, k
+    assert not any(d["name"] == "Archive3" for d in STATE.values())
+    print("forged journals refused: foreign manifest, mismatched op, redirected or protected "
+          "folder id, undo of a move that never happened; Drive untouched")
+
     # trash: exact duplicates only, one copy must survive, re-checked live, undo un-trashes
     def manifest(path, ops):
         with open(path, "w") as fh:
