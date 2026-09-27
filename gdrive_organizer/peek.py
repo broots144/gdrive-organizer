@@ -31,7 +31,11 @@ from __future__ import annotations
 import argparse
 import io
 import re
+import signal
 import sys
+import threading
+import zipfile
+from contextlib import contextmanager
 
 from . import core as g
 from . import drive_api as gdrive
@@ -72,6 +76,57 @@ def candidates(db, cfg, limit, max_depth=None, include_sensitive=False, only_key
     return out
 
 
+# Files peeked here can come from anyone who shares a folder with you, so the parsers get
+# bounded input: at most max_bytes downloaded whatever the index said, a DOCX (a zip) must
+# not expand past ZIP_MAX_TOTAL or compress suspiciously well (a zip bomb), and each parse
+# gets PARSE_SECONDS. A refusal is recorded as that file's error and the run continues.
+PARSE_SECONDS = 20
+ZIP_MAX_TOTAL = 64 * 1024 * 1024
+ZIP_MAX_RATIO = 200
+
+
+class PeekRefused(Exception):
+    pass
+
+
+def _download_capped(svc, key, max_bytes):
+    req = svc.files().get_media(fileId=key)
+    req.headers["Range"] = f"bytes=0-{max_bytes}"
+    data = gdrive.call(req)
+    if len(data) > max_bytes:
+        raise PeekRefused(f"file is larger than {max_bytes} bytes")
+    return data
+
+
+def _check_zip(data):
+    with zipfile.ZipFile(io.BytesIO(data)) as zf:
+        total = 0
+        for info in zf.infolist():
+            total += info.file_size
+            if total > ZIP_MAX_TOTAL:
+                raise PeekRefused("document expands beyond the safety limit")
+            if info.compress_size and info.file_size / info.compress_size > ZIP_MAX_RATIO:
+                raise PeekRefused("document is compressed suspiciously well (zip bomb?)")
+
+
+@contextmanager
+def _time_limit(seconds):
+    if not hasattr(signal, "SIGALRM") or threading.current_thread() is not threading.main_thread():
+        yield
+        return
+
+    def _expired(*_):
+        raise PeekRefused(f"parsing took longer than {seconds}s")
+
+    previous = signal.signal(signal.SIGALRM, _expired)
+    signal.alarm(seconds)
+    try:
+        yield
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, previous)
+
+
 def peek(svc, r, max_bytes, chars):
     mime = r["mime"] or ""
     if mime in EXPORT:
@@ -85,14 +140,17 @@ def peek(svc, r, max_bytes, chars):
     size = r["size"] or 0
     if r["ext"] == ".pdf" and 0 < size <= max_bytes:
         from pypdf import PdfReader
-        data = gdrive.call(svc.files().get_media(fileId=r["key"]))
-        rd = PdfReader(io.BytesIO(data))
-        return "pdf_p1", (rd.pages[0].extract_text() or "")[:chars] if rd.pages else ""
+        data = _download_capped(svc, r["key"], max_bytes)
+        with _time_limit(PARSE_SECONDS):
+            rd = PdfReader(io.BytesIO(data))
+            return "pdf_p1", (rd.pages[0].extract_text() or "")[:chars] if rd.pages else ""
     if r["ext"] == ".docx" and 0 < size <= max_bytes:
         import docx
-        data = gdrive.call(svc.files().get_media(fileId=r["key"]))
-        d = docx.Document(io.BytesIO(data))
-        return "docx", "\n".join(p.text for p in d.paragraphs)[:chars]
+        data = _download_capped(svc, r["key"], max_bytes)
+        _check_zip(data)
+        with _time_limit(PARSE_SECONDS):
+            d = docx.Document(io.BytesIO(data))
+            return "docx", "\n".join(p.text for p in d.paragraphs)[:chars]
     return "skip", None
 
 

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gdrive-organizer"
-version = "0.3.1"
+version = "0.3.2"
 description = "Guarded, reversible Google Drive reorganizer for use with AI assistants: metadata-only index, protected folders, rules compiled to validated manifests, journaled moves with undo, and duplicate removal only to trash."
 readme = "README.md"
 license = "MIT"
@@ -24,7 +24,7 @@ dependencies = []
 
 [project.optional-dependencies]
 api = ["google-api-python-client>=2.100", "google-auth-oauthlib>=1.0"]
-peek = ["pypdf>=3.0", "python-docx>=1.0"]
+peek = ["pypdf>=6.0", "python-docx>=1.0"]  # pypdf 6 bounds decompressed stream output
 all = ["gdrive-organizer[api,peek]"]
 
 [project.scripts]
