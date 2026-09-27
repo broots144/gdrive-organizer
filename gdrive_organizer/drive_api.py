@@ -3,7 +3,8 @@
 Scopes are least privilege per phase:
   `index-drive`  -> drive.metadata.readonly  (cannot read content, cannot write)
   `peek`   -> drive.readonly           (can read content, cannot write)
-  `apply`        -> drive                    (needed to move files the app did not create)
+  `apply`        -> drive                    (needed to move files the app did not create;
+                                              kept in memory only unless --token is given)
 
 Setup (about 20 minutes, once): Google Cloud console -> new project -> enable Drive API ->
 OAuth consent screen (External, Testing, add yourself as test user) -> Credentials ->
@@ -28,7 +29,8 @@ RETRY_STATUS = {429, 500, 502, 503, 504}
 RETRY_REASONS = {"rateLimitExceeded", "userRateLimitExceeded", "backendError", "internalError"}
 
 
-def service(scope_key: str, client_secret: str, token_path: str):
+def service(scope_key: str, client_secret: str, token_path: str | None):
+    """Build a Drive client. With token_path None the credential is never written to disk."""
     from google.auth.transport.requests import Request
     from google.oauth2.credentials import Credentials
     from google_auth_oauthlib.flow import InstalledAppFlow
@@ -36,7 +38,7 @@ def service(scope_key: str, client_secret: str, token_path: str):
 
     scope = [SCOPES[scope_key]]
     creds = None
-    if os.path.exists(token_path):
+    if token_path and os.path.exists(token_path):
         creds = Credentials.from_authorized_user_file(token_path, scope)
     if creds and not creds.valid and creds.expired and creds.refresh_token:
         try:
@@ -48,6 +50,8 @@ def service(scope_key: str, client_secret: str, token_path: str):
     if not creds or not creds.valid:
         flow = InstalledAppFlow.from_client_secrets_file(client_secret, scope)
         creds = flow.run_local_server(port=0)
+        if not token_path:
+            return build("drive", "v3", credentials=creds, cache_discovery=False)
         os.makedirs(os.path.dirname(os.path.abspath(token_path)), exist_ok=True)
         with open(token_path, "w") as fh:
             fh.write(creds.to_json())

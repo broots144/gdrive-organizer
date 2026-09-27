@@ -23,10 +23,16 @@ approve it with the account you added as a test user.
 |---|---|---|---|
 | `index-drive` | `drive.metadata.readonly` | list names, sizes, checksums; no content, no writes | `private/token_meta.json` |
 | `peek` | `drive.readonly` | read content; no writes | `private/token_read.json` |
-| `apply` | `drive` | move, rename, create folders, trash | `private/token_write.json` |
+| `apply` | `drive` | move, rename, create folders, trash | none: kept in memory (`--token FILE` to save it) |
 
-Token files are written with mode `0600`. The committed `.claude/settings.json` blocks an assistant
-from reading them.
+`apply` asks you to sign in on every run because its token can change anything in your Drive; a
+saved copy would be the most valuable file in `private/`. If you ran an earlier version, delete
+`private/token_write.json`.
+
+Token files are written with mode `0600`. The committed `.claude/settings.json` denies them to an
+assistant twice: its Read tool (`permissions.deny`) and, at the OS level, every sandboxed command
+(`sandbox.filesystem.denyRead` and `denyWrite`). So run `index-drive`, `peek` and `apply` in your
+own terminal, or with `!` in Claude Code, which runs outside the sandbox.
 
 ## What to expect
 
