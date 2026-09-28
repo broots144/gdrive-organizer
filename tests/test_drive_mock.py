@@ -285,6 +285,15 @@ def main():
     assert "undo of op" in str(rc) and "does not match" in str(rc), rc
     rc = forged("j6.jsonl", [header, dict(fake_move, old_parent="HL")], ["--undo"])
     assert "undo of op" in str(rc), rc
+    # a record for an op index the reviewed manifest does not have, and a header-less journal
+    s1 = STATE["S1"]
+    foreign = {"i": 999, "state": "done", "op": "move", "dst": s1["name"], "src": None,
+               "src_key": "S1", "new_parent": s1["parents"][0], "old_parent": "HL",
+               "old_name": "renamed"}
+    rc = forged("j7.jsonl", [header, foreign], ["--undo"])
+    assert "not in this manifest" in str(rc), rc
+    rc = forged("j8.jsonl", [dict(done_mk, new_id="EMPTY")], ["--undo"])
+    assert "no manifest header" in str(rc), rc
     for k, d in snapshot.items():
         assert STATE[k] == d, k
     assert not any(d["name"] == "Archive3" for d in STATE.values())

@@ -13,7 +13,13 @@
         "./private/client_secret*.json",
         "./private/token*.json",
         "./private/*.journal.jsonl",
-        "./private/*.journal.jsonl.undo.jsonl"
+        "./private/*.journal.jsonl.undo.jsonl",
+        "./gdrive_organizer",
+        "./.venv",
+        "./scripts",
+        "./.git/hooks",
+        "./.git/config",
+        "./pyproject.toml"
       ]
     }
   },

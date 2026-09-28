@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.3 (2026-09-28)
+
+- `apply --undo` binds every journal record to the sha-confirmed manifest, not only to the
+  ops that still validate: a journal must start with this manifest's header, and a record whose
+  op index is not in the manifest, or does not match that manifest op, is refused. Before, a
+  record with an unknown index was undone without any check against the reviewed plan.
+- `.claude/settings.json` also denies sandboxed writes to the code the owner runs outside the
+  sandbox: the package, `.venv`, `scripts/`, `.git/hooks`, `.git/config` and `pyproject.toml`.
+
 ## 0.3.2 (2026-09-27)
 
 - `peek` bounds what it hands to the PDF and DOCX parsers, since peeked files can come
