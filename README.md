@@ -97,7 +97,9 @@ The repo is set up so an assistant session is safe by default:
 - `.claude/settings.json` turns on the Bash sandbox, denies writes under `~/Library/CloudStorage`
   and reads of the Drive for desktop cache, and blocks reading OAuth files and the quarantine list.
   The OAuth files are denied at the OS level too, so sandboxed commands cannot read or replace
-  them, and sandboxed commands cannot write apply journals. Run the commands that sign in
+  them, and sandboxed commands cannot write apply journals. Nor can they change the code you run
+  yourself (the package, `.venv`, `scripts/`, git hooks and config): code edits go through the
+  editor tool, whose diffs you approve. Run the commands that sign in
   (`index-drive`, `peek`, `apply`) in your own terminal, or with `!` in Claude Code.
 - `python3 scripts/make_local_settings.py` adds OS-level denies for **your** protected folder names
   to `.claude/settings.local.json` (gitignored).

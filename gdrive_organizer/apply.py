@@ -65,20 +65,36 @@ def last_state(records):
     return st
 
 
-def check_journal(recs, sha, plan):
+def check_journal(recs, sha, plan, ops):
     """The journal is not covered by --confirm-sha, so treat it as untrusted input: it must
-    belong to this manifest, and each record must match the reviewed op it claims to be.
-    Values a record adds (Drive IDs, old names) are verified again by the backend before use."""
+    start with this manifest's header, and each record must match the reviewed op it claims to
+    be. `ops` is the whole sha-confirmed manifest: undo may run against a re-indexed Drive where
+    an op no longer validates (so it is not in `plan`), but it must still be an op the owner
+    reviewed. Values a record adds (Drive IDs, old names) are verified again before use."""
+    if not recs:
+        return
+    if recs[0].get("state") != "header":
+        raise SystemExit("journal has no manifest header; refusing to use it")
     by_i = {e["i"]: e for e in plan}
     for r in recs:
         if r.get("state") == "header":
             if r.get("manifest_sha") != sha:
                 raise SystemExit("journal belongs to a different manifest; refusing to use it")
             continue
-        e = by_i.get(r.get("i"))
+        i = r.get("i")
+        e = by_i.get(i)
         if e is None:
-            # Undo may run against a re-indexed Drive where an op no longer validates; the
-            # backend then checks the record against Drive alone.
+            if not isinstance(i, int) or isinstance(i, bool) or not 0 <= i < len(ops):
+                raise SystemExit(f"journal record for op {i!r} is not in this manifest; "
+                                 "refusing to use this journal")
+            op = ops[i]
+            e = {"op": op.get("op"), "dst": g.nfc(op.get("dst", "")).strip("/"),
+                 "src": g.nfc(op["src"]).strip("/") if op.get("src") else None,
+                 "src_key": op.get("src_key")}
+            if r.get("state") in ("intent", "done") and any(
+                    (r.get(k) or None) != (e.get(k) or None) for k in ("op", "dst", "src", "src_key")):
+                raise SystemExit(f"journal record for op {i} does not match the manifest; "
+                                 "refusing to use this journal")
             continue
         if r.get("state") in ("intent", "done") and any(
                 r.get(k) != e.get(k) for k in ("op", "dst", "src", "src_key")):
@@ -370,7 +386,8 @@ def main(argv=None) -> int:
                          "the manifest changed or was not reviewed")
     guard = g.Guard(cfg)
     g.load_protected(db, guard)
-    errors, warns, plan = v.validate(db, cfg, v.load_manifest(a.manifest))
+    ops = v.load_manifest(a.manifest)
+    errors, warns, plan = v.validate(db, cfg, ops)
     if errors and not a.undo:
         for e in errors[:50]:
             print("ERROR", e)
@@ -394,7 +411,7 @@ def main(argv=None) -> int:
           else DriveBackend(db, guard, a.client_secret, a.token))
 
     recs = journal.read()
-    check_journal(recs, sha, plan)
+    check_journal(recs, sha, plan, ops)
 
     if a.undo:
         return run_undo(be, journal, jpath, a, plan)
