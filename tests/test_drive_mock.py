@@ -300,6 +300,80 @@ def main():
     print("forged journals refused: foreign manifest, mismatched op, redirected or protected "
           "folder id, undo of a move that never happened; Drive untouched")
 
+    # The index is not covered by --confirm-sha either. An index edited between review and
+    # execute must not redirect a reviewed op to another Drive folder or item.
+    import shutil
+    STATE["OUTSIDE"] = {"name": "shared-with-outsiders", "mimeType": F, "parents": ["ROOT"]}
+    STATE["GD2"] = {"name": "untitled document", "mimeType": "application/vnd.google-apps.document",
+                    "parents": ["HL"], "modifiedTime": OLD}
+    snapshot = copy.deepcopy(STATE)
+    with open("plan7.jsonl", "w") as fh:
+        fh.write(json.dumps({"op": "move", "src": "Scan_001.pdf", "src_key": "S1",
+                             "dst": "old-empty/scan.pdf"}) + "\n")
+    sha7 = g.sha256_file("plan7.jsonl")
+    shutil.copy("d.sqlite", "t1.sqlite")
+    t1 = sqlite3.connect("t1.sqlite")
+    t1.execute("UPDATE items SET key='OUTSIDE' WHERE key='EMPTY'")  # dst parent -> another folder
+    t1.commit()
+    rc = run("apply", ["--backend", "drive", "--db", "t1.sqlite", "--config", "cfg.json",
+                       "--manifest", "plan7.jsonl", "--execute", "--confirm-sha", sha7,
+                       "--pause", "0", "--journal", "t1.journal.jsonl"])
+    assert "not that folder in Drive" in str(rc), rc
+    with open("plan8.jsonl", "w") as fh:  # no src_key: the index resolves the item
+        fh.write(json.dumps({"op": "move", "src": "untitled document",
+                             "dst": "old-empty/notes"}) + "\n")
+    sha8 = g.sha256_file("plan8.jsonl")
+    shutil.copy("d.sqlite", "t2.sqlite")
+    t2 = sqlite3.connect("t2.sqlite")
+    t2.execute("UPDATE items SET key='GD2', parent_key='HL' WHERE key='GD'")  # same name, elsewhere
+    t2.commit()
+    rc = run("apply", ["--backend", "drive", "--db", "t2.sqlite", "--config", "cfg.json",
+                       "--manifest", "plan8.jsonl", "--execute", "--confirm-sha", sha8,
+                       "--pause", "0", "--journal", "t2.journal.jsonl"])
+    assert "not at the reviewed path" in str(rc), rc
+    for k, d in snapshot.items():
+        assert STATE[k] == d, k
+    print("edited index refused: redirected dst folder and swapped src item; Drive untouched")
+
+    # After a normal run and a re-index, completed moves no longer validate. A journal whose
+    # move record names another folder or name must still be refused by undo.
+    with open("plan6.jsonl", "w") as fh:
+        for op in [{"op": "mkdir", "dst": "Archive6"},
+                   {"op": "move", "src": "Scan_001.pdf", "src_key": "S1", "dst": "Archive6/s1.pdf"}]:
+            fh.write(json.dumps(op) + "\n")
+    sha6 = g.sha256_file("plan6.jsonl")
+    before6 = copy.deepcopy(STATE)
+    rc = run("apply", ["--backend", "drive", "--db", "d.sqlite", "--config", "cfg.json",
+                       "--manifest", "plan6.jsonl", "--execute", "--confirm-sha", sha6,
+                       "--pause", "0"])
+    assert rc == 0 and STATE["S1"]["name"] == "s1.pdf", rc
+    assert run("index_drive", ["--db", "d6.sqlite", "--config", "cfg.json",
+                               "--client-secret", "x"]) == 0
+    errs, _, _ = validate.validate(g.open_db("d6.sqlite"), cfg, validate.load_manifest("plan6.jsonl"))
+    assert len(errs) >= 2, errs  # neither op validates any more
+    real = [json.loads(x) for x in open("plan6.jsonl.journal.jsonl")]
+    after6 = copy.deepcopy(STATE)
+    for field, value in (("old_parent", "OUTSIDE"), ("old_name", "renamed-by-journal")):
+        recs = [dict(r, **{field: value}) if r.get("state") == "done" and r.get("op") == "move"
+                else r for r in real]
+        with open(f"j6-{field}.jsonl", "w") as fh:
+            for r in recs:
+                fh.write(json.dumps(r) + "\n")
+        rc = run("apply", ["--backend", "drive", "--db", "d6.sqlite", "--config", "cfg.json",
+                           "--manifest", "plan6.jsonl", "--journal", f"j6-{field}.jsonl",
+                           "--execute", "--confirm-sha", sha6, "--undo", "--pause", "0"])
+        assert "does not match the reviewed move" in str(rc), (field, rc)
+        for k, d in after6.items():
+            assert STATE[k] == d, (field, k)
+    rc = run("apply", ["--backend", "drive", "--db", "d6.sqlite", "--config", "cfg.json",
+                       "--manifest", "plan6.jsonl", "--execute", "--confirm-sha", sha6,
+                       "--undo", "--pause", "0"])
+    assert rc == 0, rc
+    for k, d in before6.items():
+        assert STATE[k]["parents"] == d["parents"] and STATE[k]["name"] == d["name"], k
+    print("undo after re-index: forged old_parent/old_name refused; the real journal undoes")
+    del STATE["OUTSIDE"], STATE["GD2"]
+
     # trash: exact duplicates only, one copy must survive, re-checked live, undo un-trashes
     def manifest(path, ops):
         with open(path, "w") as fh:

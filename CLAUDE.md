@@ -45,7 +45,7 @@ actual Drive work also happens here, with every personal artifact confined to `p
 ## Commands
 
 ```bash
-python3 tests/test_fs_local.py && python3 tests/test_drive_mock.py && python3 tests/test_rules_to_plan.py && python3 tests/test_peek_limits.py
+python3 tests/test_fs_local.py && python3 tests/test_drive_mock.py && python3 tests/test_rules_to_plan.py && python3 tests/test_peek_limits.py && python3 tests/test_sandbox_settings.py
 gdrive-organizer --help
 ```
 
