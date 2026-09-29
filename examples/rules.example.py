@@ -24,7 +24,6 @@ DUMP_CHILD = (f"i.parent_key = (SELECT key FROM items WHERE depth=0 AND kind='di
               f"AND pathkey='{DUMP}')")
 
 # Optional settings (defaults shown).
-# DUMP_NEST = "from-old-dropbox"          # where a colliding dump child lands inside its target
 # DUPLICATES_DIR = "archive/duplicates"
 # UNSORTED_DIR = "archive/unsorted"
 LIVE_TOPS = ["personal", "finance", "work", "media"]  # only affects the summary split
