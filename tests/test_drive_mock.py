@@ -12,7 +12,7 @@ import sys
 import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.dirname(HERE))
+import _pkg  # noqa: E402,F401  (loads the package without the repo root on sys.path)
 from gdrive_organizer import core as g  # noqa: E402
 from gdrive_organizer import drive_api as gdrive  # noqa: E402
 from gdrive_organizer import validate  # noqa: E402

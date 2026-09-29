@@ -13,7 +13,7 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
-sys.path.insert(0, ROOT)
+import _pkg  # noqa: E402,F401  (loads the package without the repo root on sys.path)
 from gdrive_organizer import core as g  # noqa: E402
 from gdrive_organizer import validate  # noqa: E402
 from gdrive_organizer import plan as rules_to_plan  # noqa: E402

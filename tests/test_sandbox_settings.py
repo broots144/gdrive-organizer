@@ -5,11 +5,19 @@ hooks and config), Claude Code config (hooks and MCP servers run unsandboxed), a
 
 No sandbox runs here: this checks the list, using the glob rule of the entries ('*' stays within
 one path component; a plain directory entry covers everything below it).
+
+The list cannot name every new root-level DIRECTORY the sandbox may create (./ctypes/, ./sqlite3/),
+so the other half is that nothing the owner runs puts the repo root on sys.path ahead of the
+standard library: shadow_check() runs the tests and scripts in a scratch copy whose root holds
+stdlib-named packages and fails if any of them is imported.
 """
 import fnmatch
 import json
 import os
+import shutil
+import subprocess
 import sys
+import tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -40,6 +48,44 @@ def covered(path, entries):
     return False
 
 
+# stdlib modules the package, tests and scripts import (after interpreter start-up)
+SHADOWED = ["ctypes", "sqlite3", "hashlib", "unicodedata", "random", "json", "subprocess",
+            "tempfile", "argparse", "fnmatch", "zipfile", "copy", "contextlib", "shutil",
+            "datetime", "pathlib", "string", "textwrap", "uuid", "base64", "urllib", "http",
+            "email", "logging", "importlib", "runpy", "collections", "re", "io", "time", "glob",
+            "threading", "platform", "struct", "signal", "locale", "html", "xml", "csv",
+            "secrets", "hmac", "getpass", "socket", "ssl", "queue", "math", "heapq", "bisect"]
+OWNER_RUNS = [["tests/test_fs_local.py"], ["tests/test_drive_mock.py"],
+              ["tests/test_rules_to_plan.py"], ["tests/test_peek_limits.py"],
+              ["scripts/rules_to_plan.py", "--help"], ["scripts/dupes_to_plan.py", "--help"],
+              ["scripts/empty_dirs_to_plan.py", "--help"]]
+
+
+def shadow_check():
+    tmp = tempfile.mkdtemp(prefix="gdo-shadow-")
+    try:
+        scratch = os.path.join(tmp, "repo")
+        os.mkdir(scratch)
+        for d in ("gdrive_organizer", "tests", "scripts"):
+            shutil.copytree(os.path.join(ROOT, d), os.path.join(scratch, d),
+                            ignore=shutil.ignore_patterns("__pycache__"))
+        mark = os.path.join(tmp, "shadow-imported.txt")
+        for name in SHADOWED:
+            os.mkdir(os.path.join(scratch, name))
+            with open(os.path.join(scratch, name, "__init__.py"), "w", encoding="utf-8") as fh:
+                fh.write(f"open({mark!r}, 'a').write({name!r} + '\\n')\n")
+        env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+        for cmd in OWNER_RUNS:
+            r = subprocess.run([sys.executable] + [os.path.join(scratch, cmd[0])] + cmd[1:],
+                               cwd=scratch, env=env, capture_output=True, text=True)
+            hit = open(mark, encoding="utf-8").read().split() if os.path.exists(mark) else []
+            assert not hit, f"{cmd[0]} imported root-level {sorted(set(hit))} instead of the stdlib"
+            assert r.returncode == 0, f"{cmd[0]} failed in the scratch copy:\n{r.stdout}\n{r.stderr}"
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    print(f"{len(OWNER_RUNS)} owner-run tests/scripts ignore {len(SHADOWED)} root-level stdlib-named packages")
+
+
 def main():
     with open(os.path.join(ROOT, ".claude", "settings.json"), encoding="utf-8") as fh:
         s = json.load(fh)
@@ -52,6 +98,7 @@ def main():
     assert not blocked, f"the assistant's own outputs must stay writable: {blocked}"
     print(f"sandbox denyWrite covers {len(MUST_DENY)} owner-run paths; "
           f"{len(MAY_WRITE)} assistant outputs stay writable")
+    shadow_check()
     print("ALL SANDBOX SETTINGS TESTS PASSED")
     return 0
 
