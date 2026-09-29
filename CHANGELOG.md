@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- The tests and `scripts/*_to_plan.py` no longer put the repo root on `sys.path` (or `PYTHONPATH`)
+  ahead of the standard library; they load the in-repo package by file path (`tests/_pkg.py`,
+  `scripts/_pkg.py`). The sandbox can still create a new root-level directory such as `./ctypes/`,
+  and before this such a directory would have shadowed the stdlib module and run when you ran the
+  tests outside the sandbox. `tests/test_sandbox_settings.py` now runs the tests and scripts in a
+  scratch copy full of stdlib-named root-level packages and fails if any of them is imported.
+
 ## 0.3.4 (2026-09-28)
 
 - `apply` no longer trusts Drive IDs from the index, which `--confirm-sha` does not cover. Before

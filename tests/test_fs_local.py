@@ -13,13 +13,16 @@ import sys
 import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-REPO = os.path.dirname(HERE)
 PROTECTED = "EXAMPLE_PROTECTED_FOLDER"
-ENV = dict(os.environ, PYTHONPATH=REPO)
+# The CLI runs as `python -c BOOT args`: BOOT loads the in-repo package by file path (tests/_pkg.py)
+# and runs its __main__, so neither the repo root nor PYTHONPATH goes on sys.path ahead of the stdlib.
+BOOT = ("import sys; sys.path.insert(0, %r); import _pkg, runpy; sys.path.pop(0); "
+        "runpy.run_module('gdrive_organizer', run_name='__main__', alter_sys=True)" % HERE)
+ENV = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
 
 
 def cli(*args, ok=(0,)):
-    r = subprocess.run([sys.executable, "-m", "gdrive_organizer"] + list(args), cwd=WORK,
+    r = subprocess.run([sys.executable, "-c", BOOT] + list(args), cwd=WORK,
                        capture_output=True, text=True, env=ENV)
     if r.returncode not in ok:
         raise SystemExit(f"FAILED {args} rc={r.returncode}\n{r.stdout}\n{r.stderr}")
@@ -99,7 +102,7 @@ cli(*common, "--journal", "run2.jsonl", "--undo")
 assert listing(ROOT) == before, "tree not restored"
 print("undo restored the tree exactly")
 
-sys.path.insert(0, REPO)
+import _pkg  # noqa: E402,F401  (tests/ is sys.path[0])
 from gdrive_organizer import core  # noqa: E402
 
 with core.no_materialize():  # binds setiopolicy_np on macOS; no-op elsewhere
