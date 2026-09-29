@@ -38,7 +38,8 @@ safety net. This tool splits the job so each side does what it is good at:
 - **Nothing runs unvalidated.** `apply` re-validates the manifest and refuses to run unless you pass
   the manifest's sha256 from `validate`, so what executes is exactly what you reviewed.
 - **Moves never overwrite or delete.** Reorganization is `mkdir` and `move` only. Collisions are
-  resolved, never clobbered; files are never renamed.
+  resolved, never clobbered, and never parked in invented folders; a file is renamed only by a
+  rule you write for that one Drive ID.
 - **Removal is opt-in and duplicate-only.** `trash` sends a file to Drive's trash (30 days) only if
   a byte-identical copy (same md5 and size) stays; empty folders only if Drive confirms they are
   empty. Nothing is ever permanently deleted by this tool.

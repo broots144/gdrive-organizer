@@ -58,13 +58,17 @@ Iterate on the rules until `validate` reports zero errors. What the generator do
 - Adds `"override": ["sensitive"]` to each sensitive-named source, so every exception is visible
   in the manifest instead of hidden behind a global flag.
 - Resolves **collisions** (two sources for one target, or a target that exists with different
-  case): the target becomes an `mkdir` and the sources merge into it, leaving their emptied shells.
-  Files are never renamed: an identical colliding file goes to `archive/duplicates`, a different one
-  with the same name to a `same-name-2/` folder beside the first. `STRIP_NAMES` lists the only
-  allowed renames (names with leading or trailing whitespace, which Drive allows but validate
-  refuses).
-- Optionally empties a **dump folder** (`DUMP = "old dropbox"`): a colliding child is moved whole
-  into `<target>/from-old-dropbox` so the dump really ends up empty.
+  case): the target becomes an `mkdir` and the sources merge into it, leaving their emptied shells
+  for `empty-dirs`. It never invents a holding folder. An identical colliding file goes to
+  `archive/duplicates`; a different one with the same name (and any same-name Google Doc, which has
+  no md5) stays where it is and is counted as `file_name_collision`. `--collisions-out FILE` lists
+  those clashes as Drive IDs (the file, the one holding the name, the contested target).
+- Never renames on its own. To place a clashing file, write a rule pinned to its Drive ID with a
+  literal destination name (`where="i.key = '<id>'"`, `dst="notes/todo (2019 draft).txt"`),
+  choosing the name from `peek` snippets or dates. `STRIP_NAMES` covers names with leading or
+  trailing whitespace, which Drive allows but validate refuses.
+- Optionally empties a **dump folder** (`DUMP = "old dropbox"`): every child needs a rule, and a
+  child folder that collides merges into its target like any other source.
 - Prints counts per rule and a live, archive and left-in-place split. It never prints paths.
 
 Advice that matters more than any flag:

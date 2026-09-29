@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- `plan` no longer invents holding folders on a collision. A dump child whose target exists
+  merges into it like any other folder (its empty shell is left for `empty-dirs`) instead of
+  moving whole to `<target>/from-<dump>`; `DUMP_NEST` is ignored with a note. A file whose name is
+  taken by a different file (or a same-name Google Doc) stays in place, counted as
+  `file_name_collision`, instead of going to a `same-name-N/` folder; the new `--collisions-out`
+  lists those clashes as Drive IDs so a rename rule pinned to each ID can place them.
+
 - The tests and `scripts/*_to_plan.py` no longer put the repo root on `sys.path` (or `PYTHONPATH`)
   ahead of the standard library; they load the in-repo package by file path (`tests/_pkg.py`,
   `scripts/_pkg.py`). The sandbox can still create a new root-level directory such as `./ctypes/`,

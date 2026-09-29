@@ -103,6 +103,7 @@ def main():
     cfg = dict(g.CONFIG_DEFAULT, protected_names=[PROTECTED])
     json.dump(cfg, open(cfg_path, "w"))
     rules_path, out = os.path.join(tmp, "rules.py"), os.path.join(tmp, "plan.jsonl")
+    clash_out = os.path.join(tmp, "clashes.jsonl")
     open(rules_path, "w").write(RULES)
 
     db = g.open_db(db_path)
@@ -111,7 +112,7 @@ def main():
 
     with contextlib.redirect_stdout(io.StringIO()) as buf:
         rc = rules_to_plan.main(["--db", db_path, "--config", cfg_path, "--rules", rules_path,
-                                 "--out", out])
+                                 "--out", out, "--collisions-out", clash_out])
     assert rc == 0, rc
     summary = buf.getvalue()
     assert "items remaining in dump: 0" in summary, summary
@@ -129,7 +130,8 @@ def main():
     assert dsts["DC"] == "archive/duplicates/old-dump/copy.pdf", dsts
     assert dsts["DM"] == "archive/unsorted/old-dump/mystery-box", dsts
     assert dsts["DS"] == "archive/unsorted/old-dump/loose note.txt", dsts  # files never renamed
-    assert dsts["DT"] == "finance/taxes/from-old-dump", dsts  # dump child nests, dump empties
+    # a colliding dump child merges like any folder: its contents move, its shell stays
+    assert "DT" not in dsts and dsts["DT1"] == "finance/taxes/2012 receipt.pdf", dsts
     assert dsts["DL"] == "family/legal-notes" and moves["DL"]["override"] == ["sensitive"]
     assert dsts["P"] == "media/photos", dsts
     # case-insensitive collision: both taxes folders merge into one mkdir'd target
@@ -139,10 +141,17 @@ def main():
     same = sorted(dsts[k] for k in ("T1S", "T2S"))
     assert same == ["archive/duplicates/taxes/2020/same.pdf", "finance/taxes/2020/same.pdf"], same
     assert not {"T1", "T2", "T1Y", "T2Y"} & set(dsts), "merged shells must stay in place"
-    ev = sorted(dsts[k] for k in ("R1", "R2"))
-    assert ev == ["notes/event evaluation", "notes/same-name-2/event evaluation"], ev
+    # same name, different (or unknown) content: one keeps the name, the other stays put and is
+    # listed for a rename rule; no holding folder is invented
+    ev = [dsts[k] for k in ("R1", "R2") if k in dsts]
+    assert ev == ["notes/event evaluation"], ev
     assert dsts["R3"] == "archive/duplicates/plan.txt", dsts
-    assert dsts["R4"] == "notes/same-name-2/todo.txt", dsts
+    assert "R4" not in dsts, dsts
+    assert not any("same-name" in d or "from-old" in d for d in dsts.values()), dsts
+    assert "name clashes left in place: 2" in summary, summary
+    clashes = [json.loads(ln) for ln in open(clash_out)]
+    assert sorted((c["src_key"], c["twin_key"], c["dst"]) for c in clashes) == [
+        ("R2", "R1", "notes/event evaluation"), ("R4", "NT2", "notes/todo.txt")], clashes
     # left in place
     assert not {"L", "L1", "N"} & set(dsts), dsts
     assert not any(PROTECTED.casefold() in (o.get("src", "") + o["dst"]).casefold() for o in ops)
