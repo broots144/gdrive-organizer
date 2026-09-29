@@ -14,7 +14,7 @@ bash scripts/install_hooks.sh
 ## Tests
 
 ```bash
-python tests/test_fs_local.py && python tests/test_drive_mock.py && python tests/test_rules_to_plan.py
+python tests/test_fs_local.py && python tests/test_drive_mock.py && python tests/test_rules_to_plan.py && python tests/test_peek_limits.py && python tests/test_sandbox_settings.py
 ```
 
 CI runs them on Linux and macOS with Python 3.10 and 3.13. The Drive tests use an in-memory mock:

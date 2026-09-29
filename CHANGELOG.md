@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.3.4 (2026-09-28)
+
+- `apply` no longer trusts Drive IDs from the index, which `--confirm-sha` does not cover. Before
+  acting it checks in Drive that the index's root is your My Drive, that each destination
+  folder (indexed or created by this run) sits at the reviewed path, and that each item to move
+  or trash sits in the reviewed source folder under the reviewed name. Before, an index edited
+  between review and execute could send a reviewed move into another folder, or move a
+  same-named item from a folder you never reviewed.
+- `apply --undo` binds every move record to the reviewed manifest op even after a re-index,
+  when the op no longer validates: the item goes back only to the reviewed source folder
+  (checked in Drive) under the reviewed name, from the planned destination. Before, such a
+  record could name any unprotected folder and any name. Undo also uses the journal exactly as
+  it was checked instead of reading it a second time. The fs backend's undo checks the recorded
+  source path against the manifest too.
+- `.claude/settings.json` denies sandboxed writes to the rest of what you run or trust outside
+  the sandbox: `tests/`, `examples/`, root-level `*.py` and `*.pth`, `.claude/`, `.mcp.json`, and
+  `private/config.json` and `private/*.sqlite` (with their journal files). Checked against the
+  sandbox runtime; `tests/test_sandbox_settings.py` keeps the list complete.
+
 ## 0.3.3 (2026-09-28)
 
 - `apply --undo` binds every journal record to the sha-confirmed manifest, not only to the

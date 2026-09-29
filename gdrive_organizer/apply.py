@@ -161,10 +161,12 @@ class FsBackend:
     def adopt_created(self, rec):
         pass
 
-    def undo(self, rec):
+    def undo(self, rec, op=None):
         if rec["op"] == "mkdir":
             os.rmdir(self.ab(rec["dst"]))  # only succeeds if empty
         else:
+            if not op or g.pkey(rec.get("src_raw") or "") != g.pkey(op.get("src") or ""):
+                raise RuntimeError("journal src_raw is not the reviewed src path")
             if self.raw.get(rec["src_key"]) != rec["src_raw"]:
                 raise RuntimeError("journal src_raw does not match the index")
             g.rename_excl(self.ab(rec["dst"]), self.ab(rec["src_raw"]))
@@ -178,11 +180,34 @@ class DriveBackend:
         self.gd = gdrive
         self.svc = gdrive.service("write", client_secret, token)
         self.root_id = g.get_meta(db, "root_id")
+        # The index is not covered by --confirm-sha, so every Drive ID taken from it is checked
+        # against Drive itself: the root, and (below) each folder's live path.
+        live_root = self.gd.call(self.svc.files().get(fileId="root", fields="id"))["id"]
+        if not self.root_id or live_root != self.root_id:
+            raise SystemExit("the index's root_id is not this account's My Drive; re-index")
         self.guard = guard
         self.dirs = {}
         for r in db.execute("SELECT key, pathkey FROM items WHERE kind='dir'"):
             self.dirs.setdefault(r["pathkey"], []).append(r["key"])
         self.created = {}  # pathkey -> new folder id, rebuilt from the journal
+
+    def live_path_ok(self, fid, rel):
+        """True if Drive shows `fid` at the reviewed path `rel` (relative to My Drive): walk its
+        parents up to the root and compare each name. Binds IDs that came from the index or the
+        journal, neither covered by --confirm-sha, to the paths the owner reviewed."""
+        parts = [p for p in g.nfc(rel).strip("/").split("/") if p]
+        cur = fid
+        for comp in reversed(parts):
+            if not cur or cur == self.root_id or self.guard.is_protected_id(cur):
+                return False
+            m = self.gd.call(self.svc.files().get(fileId=cur, fields="id,name,parents,trashed"))
+            if m.get("trashed") or g.pkey(m.get("name", "").replace("/", ":")) != g.pkey(comp):
+                return False
+            ps = m.get("parents") or []
+            if len(ps) != 1:
+                return False
+            cur = ps[0]
+        return cur == self.root_id
 
     def folder_id(self, rel_parent):
         pk = g.pkey(rel_parent)
@@ -197,7 +222,14 @@ class DriveBackend:
             fid = ids[0]
         if self.guard.is_protected_id(fid):
             raise RuntimeError("dst parent resolves to a protected folder")
+        if not self.live_path_ok(fid, rel_parent):
+            raise RuntimeError("folder id for a planned path is not that folder in Drive")
         return fid
+
+    def check_src(self, e, parent):
+        """The item's live parent must be the reviewed src folder, not only the index's ID."""
+        if not self.live_path_ok(parent, g.parent_of(e["src"])):
+            raise RuntimeError("drift: src is not at the reviewed path in Drive")
 
     def _check_created(self, dst, new_id):
         """A folder ID taken from the journal must be the folder this manifest created: a live
@@ -233,6 +265,9 @@ class DriveBackend:
         old_pid = e["src_parent_key"]
         if cur.get("parents") != [old_pid]:
             raise RuntimeError("drift: src parent changed since indexing")
+        if g.nfc(cur["name"].replace("/", ":")) != e["src"].rsplit("/", 1)[-1]:
+            raise RuntimeError("drift: src name is not the reviewed name")
+        self.check_src(e, old_pid)
         new_pid = self.folder_id(g.parent_of(e["dst"]))
         new_name = e["dst"].rsplit("/", 1)[-1]
         kw = {"fileId": fid, "fields": "id,name,parents"}
@@ -254,6 +289,7 @@ class DriveBackend:
                 raise RuntimeError("drift: folder is already trashed")
             if cur.get("parents") != [e["src_parent_key"]]:
                 raise RuntimeError("drift: folder parent changed since indexing")
+            self.check_src(e, e["src_parent_key"])
             kids = self.gd.call(self.svc.files().list(
                 q=f"'{fid}' in parents and trashed = false", fields="files(id)", pageSize=1))
             if kids.get("files"):
@@ -267,6 +303,7 @@ class DriveBackend:
             raise RuntimeError("drift: src is already trashed")
         if cur.get("parents") != [e["src_parent_key"]]:
             raise RuntimeError("drift: src parent changed since indexing")
+        self.check_src(e, e["src_parent_key"])
         if not cur.get("md5Checksum") or cur.get("md5Checksum") != e["expect"]["md5"]:
             raise RuntimeError("drift: src content changed since indexing")
         if keep.get("trashed") or keep.get("md5Checksum") != cur.get("md5Checksum") or \
@@ -308,9 +345,10 @@ class DriveBackend:
             return "redo", {}
         return "halt", {}
 
-    def undo(self, rec, e=None):
+    def undo(self, rec, e=None, op=None):
         """Reverse one journal record, only if Drive still shows exactly what the record says
-        was done. `e` is the reviewed plan entry, when the manifest still validates."""
+        was done. `e` is the reviewed plan entry, when the manifest still validates; `op` is the
+        sha-confirmed manifest op, which binds the record whether or not it still validates."""
         for fid in (rec.get("src_key"), rec.get("new_id"), rec.get("old_parent"),
                     rec.get("new_parent")):
             if self.guard.is_protected_id(fid):
@@ -336,6 +374,18 @@ class DriveBackend:
             self.gd.call(self.svc.files().update(fileId=rec["new_id"], body={"trashed": True}))
             return
         new_name = rec["dst"].rsplit("/", 1)[-1]
+        # After a re-index a completed move no longer validates (e is None), so bind the values
+        # the record adds to the reviewed manifest op: back to the reviewed src folder (checked
+        # live in Drive) under the reviewed name, from the planned destination folder.
+        if not op or not op.get("src"):
+            raise RuntimeError("journal record has no reviewed manifest op")
+        src = g.nfc(op["src"]).strip("/")
+        if g.nfc((rec.get("old_name") or "").replace("/", ":")) != src.rsplit("/", 1)[-1]:
+            raise RuntimeError("journal record does not match the reviewed move (name)")
+        if not rec.get("old_parent") or not self.live_path_ok(rec["old_parent"], g.parent_of(src)):
+            raise RuntimeError("journal record does not match the reviewed move (folder)")
+        if rec.get("new_parent") != self.folder_id(g.parent_of(rec["dst"])):
+            raise RuntimeError("journal record does not match the reviewed destination")
         if e is not None:
             if rec.get("old_parent") != e["src_parent_key"] or \
                     (rec.get("old_name") or "").replace("/", ":") != e["expect"]["name"]:
@@ -414,7 +464,7 @@ def main(argv=None) -> int:
     check_journal(recs, sha, plan, ops)
 
     if a.undo:
-        return run_undo(be, journal, jpath, a, plan)
+        return run_undo(be, recs, jpath, a, plan, ops)
 
     if os.path.exists(jpath + ".undo.jsonl"):
         raise SystemExit("this journal has been undone; use a new --journal path for a fresh run")
@@ -471,11 +521,12 @@ def main(argv=None) -> int:
     return 0
 
 
-def run_undo(be, journal, jpath, a, plan):
+def run_undo(be, checked, jpath, a, plan, ops):
+    """`checked` is the journal as check_journal accepted it; it is not read again."""
     upath = jpath + ".undo.jsonl"
     uj = Journal(upath)
     undone = {r["i"] for r in uj.read() if r.get("state") == "undone"}
-    recs = [r for r in journal.read() if r.get("state") == "done"]
+    recs = [r for r in checked if r.get("state") == "done"]
     by_i = {e["i"]: e for e in plan}
     if isinstance(be, DriveBackend):
         # created folders resolve destination parents; each is verified again before its undo
@@ -488,9 +539,9 @@ def run_undo(be, journal, jpath, a, plan):
             continue
         try:
             if isinstance(be, DriveBackend):
-                be.undo(rec, by_i.get(rec["i"]))
+                be.undo(rec, by_i.get(rec["i"]), ops[rec["i"]])
             else:
-                be.undo(rec)
+                be.undo(rec, ops[rec["i"]])
         except Exception as ex:
             uj.append({"i": rec["i"], "state": "failed", "err": repr(ex)})
             raise SystemExit(f"undo of op {rec['i']} failed: {ex!r}. Undo journal: {upath}")

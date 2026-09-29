@@ -19,7 +19,18 @@
         "./scripts",
         "./.git/hooks",
         "./.git/config",
-        "./pyproject.toml"
+        "./pyproject.toml",
+        "./private/config.json",
+        "./private/*.sqlite",
+        "./private/*.sqlite-journal",
+        "./private/*.sqlite-wal",
+        "./private/*.sqlite-shm",
+        "./tests",
+        "./examples",
+        "./.claude",
+        "./.mcp.json",
+        "./*.py",
+        "./*.pth"
       ]
     }
   },

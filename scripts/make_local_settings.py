@@ -6,7 +6,8 @@ denyRead and denyWrite entry matching that folder anywhere under ~/Library/Cloud
 including Drive shortcut-target copies. The committed .claude/settings.json holds only generic
 rules; your folder names never enter git. Existing keys in settings.local.json are preserved.
 
-Prints counts only, so running it inside an agent session does not echo the names.
+Prints counts only, so its output never echoes the names. Run it in your own terminal (or with
+`!` in Claude Code): the committed sandbox settings deny sandboxed writes to `.claude/`.
 """
 from __future__ import annotations
 
