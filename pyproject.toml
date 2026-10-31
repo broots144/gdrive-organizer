@@ -23,7 +23,7 @@ classifiers = [
 dependencies = []
 
 [project.optional-dependencies]
-api = ["google-api-python-client>=2.100", "google-auth-oauthlib>=1.0"]
+api = ["google-api-python-client>=2.201.0", "google-auth-oauthlib>=1.0"]
 peek = ["pypdf>=6.21.4", "python-docx>=1.0"]  # pypdf 6 bounds decompressed stream output
 all = ["gdrive-organizer[api,peek]"]
 
