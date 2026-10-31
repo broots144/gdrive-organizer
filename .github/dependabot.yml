@@ -1,13 +1,29 @@
+# Dependabot (ADR-089 in workshop144/sublevel): weekly, minor+patch grouped per ecosystem, majors
+# one PR each; a release must be 3 days old (majors 7). n0's dependabot-merge.py squash-merges a
+# PR once every CI check is green on main's tip.
 version: 2
 updates:
   - package-ecosystem: github-actions
     directory: /
     schedule:
-      interval: monthly
+      interval: weekly
+    cooldown:
+      default-days: 3
+      semver-major-days: 7
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      actions:
+        update-types: [minor, patch]
   - package-ecosystem: pip
     directory: /
     schedule:
-      interval: monthly
-    # pyproject uses open ">=" floors on purpose (broad compatibility, Python 3.9+). Only move a
-    # floor when a release falls outside the range; security updates still arrive separately.
-    versioning-strategy: increase-if-necessary
+      interval: weekly
+    cooldown:
+      default-days: 3
+      semver-major-days: 7
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      python:
+        update-types: [minor, patch]
