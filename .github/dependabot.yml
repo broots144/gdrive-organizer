@@ -1,6 +1,6 @@
-# Dependabot (ADR-089 in workshop144/sublevel): weekly, minor+patch grouped per ecosystem, majors
-# one PR each; a release must be 3 days old (npm/pip/uv/cargo/pub majors 7). n0's dependabot-merge.py squash-merges a
-# PR once every CI check is green on main's tip.
+# Dependabot (ADR-089 in workshop144/sublevel): weekly; per ecosystem one PR for minor+patch and
+# one for majors, across all its directories. A release must be 3 days old (majors 7 where
+# supported). n0's dependabot-merge.py squash-merges a PR once every CI check is green on main's tip.
 version: 2
 updates:
   - package-ecosystem: github-actions
@@ -14,6 +14,8 @@ updates:
     groups:
       actions:
         update-types: [minor, patch]
+      actions-majors:
+        update-types: [major]
   - package-ecosystem: pip
     directory: /
     schedule:
@@ -26,3 +28,5 @@ updates:
     groups:
       python:
         update-types: [minor, patch]
+      python-majors:
+        update-types: [major]
