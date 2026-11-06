@@ -268,6 +268,29 @@ def main():
     assert STATE[arch2].get("trashed") is True
     print("timeout after apply OK: retry reconciled, undo restored everything")
 
+    # a Drive name with '/' shows as ':' in the index; a move that keeps the name leaves the
+    # live name 'a/b', and both reconcile and undo must still recognise the item
+    with open("plan-slash.jsonl", "w") as fh:
+        for op in [{"op": "mkdir", "dst": "SlashDir"},
+                   {"op": "move", "src": "a:b notes.txt", "dst": "SlashDir/a:b notes.txt"}]:
+            fh.write(json.dumps(op) + "\n")
+    sha_s = g.sha256_file("plan-slash.jsonl")
+    s_args = ["--backend", "drive", "--db", "d.sqlite", "--config", "cfg.json",
+              "--manifest", "plan-slash.jsonl", "--execute", "--confirm-sha", sha_s, "--pause", "0"]
+    before_s = copy.deepcopy(STATE)
+    TIMEOUT_AFTER_APPLY.add("SLASH")
+    rc = run("apply", s_args)
+    assert "TimeoutError" in str(rc), rc
+    sdir = [k for k, d in STATE.items() if d["name"] == "SlashDir"][0]
+    assert STATE["SLASH"]["parents"] == [sdir] and STATE["SLASH"]["name"] == "a/b notes.txt"
+    rc = run("apply", s_args + ["--retry-failed"])
+    assert rc == 0, rc  # reconciled as done, not 'unknown state'
+    rc = run("apply", s_args + ["--undo"])
+    assert rc == 0, rc
+    for k, d in before_s.items():
+        assert STATE[k]["parents"] == d["parents"] and STATE[k]["name"] == d["name"], k
+    print("'/' in a kept name OK: reconcile and undo match the live name")
+
     # the journal is not covered by --confirm-sha: forged or foreign records must be refused
     with open("plan5.jsonl", "w") as fh:
         for op in [{"op": "mkdir", "dst": "Archive3"},

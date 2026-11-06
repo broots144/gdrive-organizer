@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- `apply` (drive) compares a live name with '/' in its ':' form when it reconciles or undoes a
+  move. Before, a move that kept such a name could never be undone, and after a timeout the retry
+  halted with 'unknown state'.
 - `validate` refuses an item named as the source of two ops (move and move, move and trash).
   Before, both passed and `apply` failed partway, after the first op had run.
 

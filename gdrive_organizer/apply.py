@@ -174,6 +174,11 @@ class FsBackend:
 
 # ------------------------------------------------------------------ drive backend
 
+def shown(name):
+    """A live Drive name in the form the index and manifest use: NFC, '/' shown as ':'."""
+    return g.nfc((name or "").replace("/", ":"))
+
+
 class DriveBackend:
     def __init__(self, db, guard, client_secret, token):
         from . import drive_api as gdrive
@@ -278,7 +283,7 @@ class DriveBackend:
         if res.get("parents") != [new_pid]:
             raise RuntimeError("post-check: parents not as expected")
         return {"old_parent": old_pid, "new_parent": new_pid,
-                "old_name": cur["name"], "new_name": res["name"]}
+                "old_name": cur["name"], "new_name": shown(res["name"])}
 
     def trash(self, e):
         """Move one exact duplicate, or one empty folder, to Drive's trash after live checks."""
@@ -335,12 +340,13 @@ class DriveBackend:
         cur = self.gd.call(self.svc.files().get(fileId=e["src_key"], fields="name,parents"))
         new_pid = self.folder_id(g.parent_of(e["dst"]))
         new_name = e["dst"].rsplit("/", 1)[-1]
-        if cur.get("parents") == [new_pid] and cur["name"] == new_name:
+        # a kept name with '/' stays 'a/b' in Drive while the plan says 'a:b'
+        if cur.get("parents") == [new_pid] and shown(cur["name"]) == new_name:
             # Unrenamed: the current name is the original. Renamed: the index name is the best
             # record of it (a '/' in the original shows as ':' there).
             old_name = cur["name"] if new_name == e["expect"]["name"] else e["expect"]["name"]
             return "done", {"old_parent": e["src_parent_key"], "new_parent": new_pid,
-                            "old_name": old_name, "new_name": cur["name"]}
+                            "old_name": old_name, "new_name": shown(cur["name"])}
         if cur.get("parents") == [e["src_parent_key"]]:
             return "redo", {}
         return "halt", {}
@@ -395,7 +401,7 @@ class DriveBackend:
         cur = self.gd.call(self.svc.files().get(fileId=rec["src_key"],
                                                 fields="id,name,parents,trashed"))
         if cur.get("trashed") or cur.get("parents") != [rec["new_parent"]] or \
-                cur.get("name") != new_name:
+                shown(cur.get("name")) != new_name:
             raise RuntimeError("drift: item is not where this run put it")
         kw = {"fileId": rec["src_key"], "fields": "id"}
         if rec["new_parent"] != rec["old_parent"]:
