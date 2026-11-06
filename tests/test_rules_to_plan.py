@@ -94,6 +94,7 @@ def build(db, cfg):
     g.set_meta(db, "backend", "drive")
     g.mark_atomic(db)
     g.mark_sensitive(db, g.Guard(cfg))
+    g.set_meta(db, "finished", 0)
     db.commit()
 
 

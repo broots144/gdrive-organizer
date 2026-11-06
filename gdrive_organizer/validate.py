@@ -336,6 +336,7 @@ def main(argv=None) -> int:
     a = ap.parse_args(argv)
     cfg = g.load_config(a.config)
     db = g.open_db(a.db)
+    g.require_complete(db)
     ops = load_manifest(a.manifest)
     errors, warns, plan = validate(db, cfg, ops)
     moves = [p for p in plan if p["op"] == "move"]

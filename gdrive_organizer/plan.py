@@ -84,6 +84,7 @@ def main(argv=None) -> int:
     cfg = g.load_config(a.config)
     guard = g.Guard(cfg)
     db = g.open_db(a.db)
+    g.require_complete(db)
     db.create_function("REGEXP", 2, lambda p, s: s is not None and re.search(p, s) is not None)
     g.load_protected(db, guard)
     ns = runpy.run_path(a.rules)

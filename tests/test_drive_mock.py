@@ -214,6 +214,24 @@ def main():
     assert not keys & {"LEGALID", "L1", "L2", "LSUB", "SC"}, keys
     print("index_drive boundary OK; items:", len(keys))
 
+    # an index whose run died partway has no 'finished' marker (and no atomic or sensitive
+    # marks): every command that reads it must refuse it
+    import shutil
+    shutil.copy("d.sqlite", "partial.sqlite")
+    with sqlite3.connect("partial.sqlite") as pdb:
+        pdb.execute("DELETE FROM meta WHERE k='finished'")
+    open("empty.jsonl", "w").close()
+    for mod, extra in (("validate", ["--manifest", "empty.jsonl"]),
+                       ("report", ["--quarantine-out", "q.txt"]),
+                       ("peek", ["--client-secret", "x"]),
+                       ("apply", ["--backend", "drive", "--manifest", "empty.jsonl"]),
+                       ("plan", ["--rules", "none.py", "--out", "none.jsonl"]),
+                       ("dedupe", ["--policy", "none.py", "--out", "none.jsonl"]),
+                       ("empty_dirs", ["--policy", "none.py", "--out", "none.jsonl"])):
+        rc = run(mod, ["--db", "partial.sqlite", "--config", "cfg.json"] + extra)
+        assert "index is incomplete" in str(rc), (mod, rc)
+    print("partial index refused by validate, report, peek, apply, plan, dedupe, empty-dirs")
+
     with open("plan.jsonl", "w") as fh:
         for op in [
             {"op": "mkdir", "dst": "Archive"},
@@ -440,7 +458,6 @@ def main():
 
     # The index is not covered by --confirm-sha either. An index edited between review and
     # execute must not redirect a reviewed op to another Drive folder or item.
-    import shutil
     STATE["OUTSIDE"] = {"name": "shared-with-outsiders", "mimeType": F, "parents": ["ROOT"]}
     STATE["GD2"] = {"name": "untitled document", "mimeType": "application/vnd.google-apps.document",
                     "parents": ["HL"], "modifiedTime": OLD}

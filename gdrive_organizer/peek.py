@@ -171,6 +171,7 @@ def main(argv=None) -> int:
     cfg = g.load_config(a.config)
     guard = g.Guard(cfg)
     db = g.open_db(a.db)
+    g.require_complete(db)
     if g.get_meta(db, "backend") != "drive":
         raise SystemExit("peek_drive needs an index built by `index-drive` (Drive IDs)")
     g.load_protected(db, guard)

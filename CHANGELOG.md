@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- `validate`, `apply`, `plan`, `report`, `peek`, `dedupe` and `empty-dirs` refuse an index with no
+  `finished` marker. An index run that died partway left committed rows with no atomic or
+  sensitive marks, so `peek` could read sensitive-named files and `plan` or `validate` could
+  split an atomic unit.
+
 - The Drive client retries transport errors (timeouts, reset connections, TLS and DNS failures)
   with the same backoff as 5xx, for read requests only. Before, one network blip aborted a whole
   `index-drive` run. Creates and updates are still not resent; the apply journal reconciles them.

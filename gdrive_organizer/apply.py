@@ -491,6 +491,7 @@ def main(argv=None) -> int:
 
     cfg = g.load_config(a.config)
     db = g.open_db(a.db)
+    g.require_complete(db)
     if g.get_meta(db, "backend") != a.backend:
         raise SystemExit("index backend does not match --backend")
     sha = g.sha256_file(a.manifest)
