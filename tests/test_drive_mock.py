@@ -4,7 +4,9 @@ Asserts: the protected folder's ID never appears in any list query or get/update
 shortcut to it is quarantined; duplicate names force src_key; moves are ID based and undo
 restores parents and names exactly.
 """
+import contextlib
 import copy
+import io
 import json
 import os
 import re
@@ -316,6 +318,19 @@ def main():
     rc = run("apply", o_args + ["--undo"])
     assert rc == 0 and STATE[made[0]].get("trashed") is True, rc
     print("mkdir reconcile escapes backslash and quote in the Drive query")
+
+    # --batch 0 is refused up front; before, the first op ran and then n % 0 raised
+    with open("plan-b0.jsonl", "w") as fh:
+        fh.write(json.dumps({"op": "mkdir", "dst": "Batch0"}) + "\n")
+    sha_b = g.sha256_file("plan-b0.jsonl")
+    b_args = ["--backend", "drive", "--db", "d.sqlite", "--config", "cfg.json", "--manifest",
+              "plan-b0.jsonl", "--execute", "--confirm-sha", sha_b, "--pause", "0", "--batch", "0"]
+    for extra in ([], ["--undo"]):
+        with contextlib.redirect_stderr(io.StringIO()) as buf:
+            rc = run("apply", b_args + extra)
+        assert rc == 2 and "--batch must be >= 1" in buf.getvalue(), (rc, buf.getvalue())
+    assert not any(d["name"] == "Batch0" for d in STATE.values())
+    print("--batch 0 refused before any op runs")
 
     # the journal is not covered by --confirm-sha: forged or foreign records must be refused
     with open("plan5.jsonl", "w") as fh:

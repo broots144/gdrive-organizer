@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- `apply --batch 0` is refused with a usage error. Before, the first op ran and the run then
+  died with ZeroDivisionError.
+
 - `apply` (drive) escapes backslashes, not only quotes, in the folder name its mkdir reconcile
   sends to `files.list`. Before, a backslash in a planned name made the query fail, match the
   wrong folder (the name could inject an `or` clause), or miss and create a duplicate. A

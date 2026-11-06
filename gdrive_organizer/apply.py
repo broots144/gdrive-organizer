@@ -436,6 +436,8 @@ def main(argv=None) -> int:
     ap.add_argument("--undo", action="store_true")
     ap.add_argument("--retry-failed", action="store_true")
     a = ap.parse_args(argv)
+    if a.batch < 1:
+        ap.error("--batch must be >= 1 (ops between pauses; use --pause 0 for no pause)")
 
     cfg = g.load_config(a.config)
     db = g.open_db(a.db)
