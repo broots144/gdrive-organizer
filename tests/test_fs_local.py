@@ -81,6 +81,17 @@ for needle in ("protected name", "atomic unit", "live backup", "sensitive-lookin
     assert needle in out, (needle, out)
 print("validator blocks protected, atomic, live and sensitive moves")
 
+# trash exists only on the drive backend: an fs manifest with one must fail validation, before
+# any sha is approved, not at execution after the ops in front of it have run
+mixed = [{"op": "mkdir", "dst": "Holding"},
+         {"op": "trash", "src": "stuff/notes.txt", "src_key": "x", "keep_key": "y"}]
+with open(os.path.join(WORK, "mixed.jsonl"), "w") as fh:
+    fh.write("\n".join(json.dumps(p) for p in mixed) + "\n")
+out = cli("validate", "--db", "fs.sqlite", "--config", "config.json", "--manifest", "mixed.jsonl",
+          ok=(1,))
+assert "trash is supported by the drive backend only" in out, out
+print("validator refuses trash ops on an fs index")
+
 out = cli("validate", "--db", "fs.sqlite", "--config", "config.json", "--manifest", "plan.jsonl")
 sha = out.strip().split("sha256=")[-1]
 # plant a collision at op 0's destination after validation: rename must fail, never clobber

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- `validate` refuses `trash` ops on an fs-backend index. Before, such a manifest validated and
+  `apply` ran the ops in front of the first trash op, then aborted.
+
 - `apply` (drive) compares a live name with '/' in its ':' form when it reconciles or undoes a
   move. Before, a move that kept such a name could never be undone, and after a timeout the retry
   halted with 'unknown state'.

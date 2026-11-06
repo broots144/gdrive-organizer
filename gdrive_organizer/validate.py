@@ -127,6 +127,9 @@ def validate(db, cfg, ops):
         def err(msg):
             errors.append(f"{tag}: {msg}")
 
+        if kind == "trash" and backend != "drive":
+            err("trash is supported by the drive backend only")
+            continue
         if kind == "trash":
             entry = validate_trash(op, err, by_key, by_pk, guard, recent, over, trashed_keys,
                                    src_pks, move_pks, trash_dir_pks, nondir, subdirs,
