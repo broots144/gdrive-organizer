@@ -30,7 +30,8 @@
         "./.claude",
         "./.mcp.json",
         "./*.py",
-        "./*.pth"
+        "./*.pth",
+        "./justfile"
       ]
     }
   },

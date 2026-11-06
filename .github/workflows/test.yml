@@ -33,7 +33,25 @@ jobs:
         run: python tests/test_peek_limits.py
       - name: sandbox settings cover everything run outside the sandbox
         run: python tests/test_sandbox_settings.py
+      - name: state guard rules
+        run: python tests/test_state_guard.py
       - name: demo end to end (fake tree, fs backend)
         run: DEMO_FAST=1 bash examples/demo/run.sh
       - name: CLI smoke
         run: gdrive-organizer --help
+
+  state-guard:
+    # repo-state pattern (docs/DECISIONS.md D-013): code changes carry a STATE.md update
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: "code changes update STATE.md (chore: and deps: titles exempt)"
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          TITLE: ${{ github.event.pull_request.title }}
+        run: python3 scripts/state_guard.py "$BASE" "$HEAD" "$TITLE"

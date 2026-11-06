@@ -1,6 +1,6 @@
 """The committed sandbox settings must deny sandboxed writes to everything the owner runs or
 trusts outside the sandbox: code (package, venv, scripts, tests, demo, root-level modules, git
-hooks and config), Claude Code config (hooks and MCP servers run unsandboxed), and the inputs
+hooks and config, the justfile), Claude Code config (hooks and MCP servers run unsandboxed), and the inputs
 `apply --execute` trusts beyond the sha-confirmed manifest (index, config, journals, OAuth files).
 
 No sandbox runs here: this checks the list, using the glob rule of the entries ('*' stays within
@@ -26,7 +26,7 @@ MUST_DENY = [
     "scripts/make_local_settings.py", "pyproject.toml", ".git/hooks/pre-commit", ".git/config",
     "tests/test_drive_mock.py", "tests/sitecustomize.py", "examples/demo/run.sh",
     "examples/demo/make_demo_tree.py", "examples/demo/rules.py", "sitecustomize.py", "json.py",
-    "evil.pth", ".claude/settings.json", ".claude/settings.local.json", ".mcp.json",
+    "evil.pth", "justfile", ".claude/settings.json", ".claude/settings.local.json", ".mcp.json",
     "private/config.json", "private/index.sqlite", "private/index.sqlite-journal",
     "private/index.sqlite-wal", "private/plan.jsonl.journal.jsonl",
     "private/plan.jsonl.journal.jsonl.undo.jsonl", "private/token_read.json",

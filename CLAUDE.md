@@ -4,6 +4,18 @@ Guidance for Claude Code sessions in this repository. The repo is meant to be sh
 actual Drive work also happens here, with every personal artifact confined to `private/`
 (gitignored).
 
+## Every session
+
+Every session, before doing anything: read STATE.md, ROADMAP.md, LESSONS.md, then the task or phase prompt.
+
+State is in the repo, not in memory. Update STATE.md when you finish meaningful work, in the same
+commit as the change. Commit before stopping. Each phase writes its plan to `docs/plans/` first,
+and is marked done only after its `just verify-phase-N` passes with the output pasted into
+STATE.md. Decisions go in `docs/DECISIONS.md` (never rewritten, only superseded); lessons in
+LESSONS.md, one line, newest first.
+
+If stuck, write a clear BLOCKED entry in STATE.md with exact next steps.
+
 ## Hard rules
 
 1. **Never execute moves.** Do not run `gdrive-organizer apply --execute` or `--undo --execute`,
@@ -40,12 +52,16 @@ actual Drive work also happens here, with every personal artifact confined to `p
 - `examples/demo/`: a self-contained demo on a fake local tree (no Google account)
 - `examples/`: config, rules and manifest templates to copy into `private/`
 - `tests/`: fake-tree end to end, mocked Drive API, rules generator
-- `docs/`: usage, OAuth setup, safety model, FileProvider findings
+- `docs/`: usage, OAuth setup, safety model, FileProvider findings, DECISIONS.md, plans/
+- `STATE.md`, `ROADMAP.md`, `LESSONS.md`: current truth, phase table, lessons
+- `scripts/state_guard.py`: CI check that code changes carry a STATE.md update
 
 ## Commands
 
 ```bash
-python3 tests/test_fs_local.py && python3 tests/test_drive_mock.py && python3 tests/test_rules_to_plan.py && python3 tests/test_peek_limits.py && python3 tests/test_sandbox_settings.py
+just check            # lint + all tests + demo + leak check (needs .venv with .[all])
+just verify-phase-N   # one per phase in ROADMAP.md
+python3 tests/test_fs_local.py && python3 tests/test_drive_mock.py && python3 tests/test_rules_to_plan.py && python3 tests/test_peek_limits.py && python3 tests/test_sandbox_settings.py && python3 tests/test_state_guard.py
 gdrive-organizer --help
 ```
 
