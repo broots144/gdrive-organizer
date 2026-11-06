@@ -1,6 +1,6 @@
 # Current Build State
 
-Last updated: 2026-11-06 by Claude Code: pypdf floor 6.21.4 -> 7.0.0 (major; deps/upgrade-2026-11-06).
+Last updated: 2026-11-06 by Claude Code: pypdf 7.0.0 held for the 7 day major cooldown; Python 3.10 facts for the extras recorded (deps/upgrade-2026-11-06).
 
 ## Phases
 
@@ -19,8 +19,8 @@ Last updated: 2026-11-06 by Claude Code: pypdf floor 6.21.4 -> 7.0.0 (major; dep
   #19 (tests and scripts load the package by path, never the repo root on `sys.path`) and #20
   (collision rework, `--collisions-out`), plus Dependabot floor bumps (#24, #26, #27, #28, #31).
 - Core has no runtime dependencies; extras `api` (google-api-python-client>=2.201.0,
-  google-auth-oauthlib>=1.5.0) and `peek` (pypdf>=7.0.0, python-docx>=1.2.0). Python 3.9+ for
-  core; every extra floor now needs Python 3.10+ (fact: PyPI `requires_python` for each).
+  google-auth-oauthlib>=1.5.0) and `peek` (pypdf>=6.21.4, python-docx>=1.2.0). Python 3.9+ for
+  core and `peek`; the `api` floors (so `all`) need Python 3.10+ (fact: PyPI `requires_python`).
 - CI (`.github/workflows/test.yml`): ubuntu and macOS x Python 3.10 and 3.13 run the five test
   files, the state guard rules, the demo and a CLI smoke. On PRs a `state-guard` job fails when
   the package, `scripts/` or `pyproject.toml` change without STATE.md (D-013).
@@ -56,13 +56,18 @@ demo and CLI smoke ok
   checked against `requires-python = ">=3.9"`; CI covers 3.10 and 3.13 only. Decide before 0.3.5
   whether to restore `increase-if-necessary` for pip or raise `requires-python` (fact: matrix in
   test.yml; fact (PyPI, 2026-11-06): google-api-python-client 2.201.0, google-auth-oauthlib 1.5.0
-  and pypdf 7.0.0 all declare `requires_python >=3.10`, so the extras do not install on 3.9).
+  and pypdf 7.0.0 declare `requires_python >=3.10`; pypdf 6.21.4 declares `>=3.9`. So `api` and
+  `all` do not install on 3.9; `peek` does, and pip picks pypdf 6.x there).
 - `just leak` only checks private patterns in the main checkout, where `.private-patterns` and
   `private/config.json` live; a worktree run warns and checks the commit identity only.
 
 ## Next
 
-1. Phase 7: cut 0.3.5: move the Unreleased section of CHANGELOG.md under `## 0.3.5 (<date>)`,
+1. On or after 2026-11-13 (7 day pip-major cooldown, ADR-089 / D-012): if pypdf 7.0.0 is not
+   yanked and no quick 7.0.x fix followed, raise the `peek` floor to `pypdf>=7.0.0` (stricter
+   parser limits for untrusted PDFs; needs Python 3.10, so settle `requires-python` first or
+   together). `peek.py` needs no code change (fact: checked against the 7.0.0 changelog in #33).
+2. Phase 7: cut 0.3.5: move the Unreleased section of CHANGELOG.md under `## 0.3.5 (<date>)`,
    bump `pyproject.toml`, tag `v0.3.5`, `gh release create` with the changelog text.
-2. Consider README limitations as future phases (shared drives, Docs/Sheets dedupe); they are
+3. Consider README limitations as future phases (shared drives, Docs/Sheets dedupe); they are
    deferred in ROADMAP.md with no target.

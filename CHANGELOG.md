@@ -2,9 +2,6 @@
 
 ## Unreleased
 
-- `peek` extra: `pypdf>=7.0.0` (was `>=6.21.4`). pypdf 7 adds stricter parser limits (object stream
-  offsets, XFA decoding, image sizes) and drops Python 3.9; no code change needed.
-
 - Repo-state files: STATE.md, ROADMAP.md, LESSONS.md, docs/DECISIONS.md, docs/plans/, and a
   justfile with `check` and per-phase verify targets. A `state-guard` CI job fails a PR that
   changes code without STATE.md (`chore:`/`deps:` titles exempt). The sandbox denies writes to
