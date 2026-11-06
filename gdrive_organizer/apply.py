@@ -174,6 +174,11 @@ class FsBackend:
 
 # ------------------------------------------------------------------ drive backend
 
+def drive_q_str(s):
+    """Escape a value for a single-quoted Drive query literal: backslash first, then quote."""
+    return s.replace("\\", "\\\\").replace("'", "\\'")
+
+
 def shown(name):
     """A live Drive name in the form the index and manifest use: NFC, '/' shown as ':'."""
     return g.nfc((name or "").replace("/", ":"))
@@ -322,7 +327,7 @@ class DriveBackend:
         whether it happened. Returns (verdict, undo info for a done record)."""
         if e["op"] == "mkdir":
             pid = self.folder_id(g.parent_of(e["dst"]))
-            name = e["dst"].rsplit("/", 1)[-1].replace("'", "\\'")
+            name = drive_q_str(e["dst"].rsplit("/", 1)[-1])
             r = self.gd.call(self.svc.files().list(
                 q=f"'{pid}' in parents and name = '{name}' and mimeType = '{g.FOLDER_MIME}' "
                   "and trashed = false", fields="files(id)", pageSize=10))
@@ -494,7 +499,11 @@ def main(argv=None) -> int:
         if prev and prev["state"] in ("intent", "failed"):
             # A failed op may still have happened (e.g. a timeout after Drive applied it), so
             # check reality before acting again.
-            verdict, extra = be.reconcile(e, prev)
+            try:
+                verdict, extra = be.reconcile(e, prev)
+            except Exception as ex:
+                raise SystemExit(f"op {e['i']} (manifest line {e['line']}) could not be "
+                                 f"reconciled: {ex!r}. Inspect by hand; journal: {jpath}")
             if verdict == "done":
                 journal.append(dict({"i": e["i"], "state": "done", "op": e["op"], "dst": e["dst"],
                                      "src": e.get("src"), "src_key": e.get("src_key"),

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- `apply` (drive) escapes backslashes, not only quotes, in the folder name its mkdir reconcile
+  sends to `files.list`. Before, a backslash in a planned name made the query fail, match the
+  wrong folder (the name could inject an `or` clause), or miss and create a duplicate. A
+  reconcile that raises now stops with the op index instead of a traceback.
+
 - `validate` refuses `trash` ops on an fs-backend index. Before, such a manifest validated and
   `apply` ran the ops in front of the first trash op, then aborted.
 

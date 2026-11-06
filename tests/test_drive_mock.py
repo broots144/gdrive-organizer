@@ -54,6 +54,7 @@ ITEMS = {
 }
 CALLS = []
 TIMEOUT_AFTER_APPLY = set()  # file IDs whose next update applies, then times out
+CREATE_FAILS = {}  # folder name -> exception its next create raises after creating it
 
 
 class Req:
@@ -83,12 +84,14 @@ class Files:
         CALLS.append(("list", q))
         m = re.match(r"'([^']+)' in parents", q)
         pid = m.group(1)
-        nm = re.search(r"name = '([^']+)'", q)
+        # a Drive query literal: a backslash escapes the next char, a bare ' ends it
+        nm = re.search(r"name = '((?:[^'\\]|\\.)*)'", q)
+        name = re.sub(r"\\(.)", r"\1", nm.group(1)) if nm else None
 
         def run(h):
             kids = [self._meta(k) for k, d in self.st.items()
                     if pid in d["parents"] and not d.get("trashed")
-                    and (not nm or d["name"] == nm.group(1))]
+                    and (name is None or d["name"] == name)]
             return {"files": kids}
         return Req(run)
 
@@ -122,6 +125,8 @@ class Files:
             nid = f"NEW{len(self.st)}"
             self.st[nid] = {"name": body["name"], "mimeType": body["mimeType"],
                             "parents": list(body["parents"])}
+            if body["name"] in CREATE_FAILS:
+                raise CREATE_FAILS.pop(body["name"])
             return {"id": nid}
         return Req(run)
 
@@ -290,6 +295,27 @@ def main():
     for k, d in before_s.items():
         assert STATE[k]["parents"] == d["parents"] and STATE[k]["name"] == d["name"], k
     print("'/' in a kept name OK: reconcile and undo match the live name")
+
+    # mkdir reconcile looks the folder up by name: a backslash and a quote in the name must be
+    # escaped in the query, or the lookup misses (and the retry makes a duplicate) or injects
+    odd = "back\\slash x\\' or name contains '"
+    with open("plan-odd.jsonl", "w") as fh:
+        fh.write(json.dumps({"op": "mkdir", "dst": odd}) + "\n")
+    sha_o = g.sha256_file("plan-odd.jsonl")
+    o_args = ["--backend", "drive", "--db", "d.sqlite", "--config", "cfg.json",
+              "--manifest", "plan-odd.jsonl", "--execute", "--confirm-sha", sha_o, "--pause", "0"]
+    CREATE_FAILS[odd] = TimeoutError("The read operation timed out")
+    rc = run("apply", o_args)
+    assert "TimeoutError" in str(rc), rc
+    rc = run("apply", o_args + ["--retry-failed"])
+    assert rc == 0, rc
+    made = [k for k, d in STATE.items() if d["name"] == odd]
+    assert len(made) == 1, made  # reconciled to the folder the timed-out create made
+    assert any(c[0] == "list" and "back\\\\slash x\\\\\\' or" in c[1] for c in CALLS), \
+        [c for c in CALLS if c[0] == "list"][-1]
+    rc = run("apply", o_args + ["--undo"])
+    assert rc == 0 and STATE[made[0]].get("trashed") is True, rc
+    print("mkdir reconcile escapes backslash and quote in the Drive query")
 
     # the journal is not covered by --confirm-sha: forged or foreign records must be refused
     with open("plan5.jsonl", "w") as fh:
