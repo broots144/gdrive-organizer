@@ -68,10 +68,30 @@ def _reason(err) -> str:
         return ""
 
 
-def call(req, tries: int = 8):
-    """Execute a googleapiclient request with exponential backoff on rate limits and 5xx."""
+def _transport_errors():
+    """Network failures below HTTP: timeouts, resets, TLS and DNS errors. httplib2 is how
+    googleapiclient talks to Drive; it is absent only in tests with a fake client."""
+    errs = (OSError,)  # TimeoutError, socket.timeout, ConnectionError and ssl.SSLError
+    try:
+        import httplib2
+        errs += (httplib2.HttpLib2Error,)
+    except ImportError:
+        pass
+    return errs
+
+
+def call(req, tries: int = 8, idempotent: bool | None = None):
+    """Execute a googleapiclient request with exponential backoff on rate limits and 5xx.
+
+    Transport errors (a timeout, a reset connection) are retried too, but only for idempotent
+    requests: by default those whose HTTP method is GET (get, list, export, get_media). A
+    create or update may have been applied before the connection dropped, so it is not resent;
+    apply's journal reconciles it instead."""
     from googleapiclient.errors import HttpError
 
+    if idempotent is None:
+        idempotent = getattr(req, "method", None) == "GET"
+    transport = _transport_errors()
     for attempt in range(tries):
         try:
             return req.execute()
@@ -83,3 +103,7 @@ def call(req, tries: int = 8):
                 time.sleep(min(64, 2 ** attempt) + random.random())
                 continue
             raise
+        except transport:
+            if not idempotent or attempt == tries - 1:
+                raise
+            time.sleep(min(64, 2 ** attempt) + random.random())

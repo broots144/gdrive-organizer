@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- The Drive client retries transport errors (timeouts, reset connections, TLS and DNS failures)
+  with the same backoff as 5xx, for read requests only. Before, one network blip aborted a whole
+  `index-drive` run. Creates and updates are still not resent; the apply journal reconciles them.
+
 - `apply` (drive) sends each folder create once instead of retrying it on 5xx. Drive can commit
   a create and still answer 5xx, so each retry could leave another same-name empty folder that
   no journal record names. A failed create is journaled and `--retry-failed` reconciles it.

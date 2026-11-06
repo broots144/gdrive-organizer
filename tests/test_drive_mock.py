@@ -162,6 +162,40 @@ def run(mod, argv):
         return e.code
 
 
+def check_transport_retry():
+    """drive_api.call retries timeouts and resets for GETs only: a write may have landed."""
+    class Flaky:
+        def __init__(self, method, errors):
+            self.method, self.errors, self.n = method, list(errors), 0
+
+        def execute(self):
+            self.n += 1
+            if self.errors:
+                raise self.errors.pop(0)
+            return {"ok": True}
+    import socket
+    real_sleep, gdrive.time.sleep = gdrive.time.sleep, lambda s: None
+    try:
+        r = Flaky("GET", [ConnectionResetError(54, "reset"), socket.timeout("timed out")])
+        assert gdrive.call(r) == {"ok": True} and r.n == 3, r.n
+        for method in ("PATCH", "POST"):
+            w = Flaky(method, [TimeoutError("timed out")])
+            try:
+                gdrive.call(w)
+                raise AssertionError("a write was retried after a transport error")
+            except TimeoutError:
+                assert w.n == 1, w.n
+        r = Flaky("GET", [OSError("down")] * 3)
+        try:
+            gdrive.call(r, tries=3)
+            raise AssertionError("gave up too late")
+        except OSError:
+            assert r.n == 3, r.n
+    finally:
+        gdrive.time.sleep = real_sleep
+    print("drive_api.call retries transport errors for reads, never for writes")
+
+
 def main():
     tmp = tempfile.mkdtemp()
     os.chdir(tmp)
@@ -604,6 +638,7 @@ def main():
     only = [k for k, in db2.execute("select key from snippets")]
     assert only == ["GD"], only
     print("peek --only-keys OK")
+    check_transport_retry()
     print("ALL DRIVE MOCK TESTS PASSED")
 
 
