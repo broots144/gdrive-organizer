@@ -497,6 +497,41 @@ def main():
     assert rc == 0 and STATE["PX2"].get("trashed") is False, rc
     print("trash OK: identical-only, one copy survives, live re-check, undo un-trashes")
 
+    # undo is write-ahead and reconciled like the forward path. (a) Drive applies a reverse
+    # move but the response times out: the undo must record it and carry on to older ops.
+    with open("plan-ut.jsonl", "w") as fh:
+        for op in [{"op": "mkdir", "dst": "UndoT"},
+                   {"op": "move", "src": "Scan_001.pdf", "src_key": "S1", "dst": "UndoT/s1u.pdf"}]:
+            fh.write(json.dumps(op) + "\n")
+    sha_u = g.sha256_file("plan-ut.jsonl")
+    u_args = ["--backend", "drive", "--db", "d.sqlite", "--config", "cfg.json",
+              "--manifest", "plan-ut.jsonl", "--execute", "--confirm-sha", sha_u, "--pause", "0"]
+    before_u = copy.deepcopy(STATE)
+    assert run("apply", u_args) == 0
+    undo_t = [k for k, d in STATE.items() if d["name"] == "UndoT"][0]
+    TIMEOUT_AFTER_APPLY.add("S1")
+    rc = run("apply", u_args + ["--undo"])
+    assert rc == 0, rc
+    for k, d in before_u.items():
+        assert STATE[k]["parents"] == d["parents"] and STATE[k]["name"] == d["name"], k
+    assert STATE[undo_t].get("trashed") is True
+    # (b) a crash after Drive un-trashed an item but before 'undone' was written leaves an
+    # undo-intent record; the rerun must reconcile it, not fail on 'no longer in the trash'
+    with open("trash-crash.jsonl", "w") as fh:
+        fh.write(json.dumps({"op": "trash", "src": px2, "src_key": "PX2", "keep_key": "PX1"}) + "\n")
+    sha_c = g.sha256_file("trash-crash.jsonl")
+    c_args = ["--backend", "drive", "--db", "d.sqlite", "--config", "cfg.json",
+              "--manifest", "trash-crash.jsonl", "--execute", "--confirm-sha", sha_c, "--pause", "0"]
+    assert run("apply", c_args) == 0 and STATE["PX2"]["trashed"] is True
+    STATE["PX2"]["trashed"] = False  # Drive applied the untrash, then the process died
+    with open("trash-crash.jsonl.journal.jsonl.undo.jsonl", "w") as fh:
+        fh.write(json.dumps({"i": 0, "state": "undo-intent"}) + "\n")
+    rc = run("apply", c_args + ["--undo"])
+    assert rc == 0, rc
+    last = [json.loads(x) for x in open("trash-crash.jsonl.journal.jsonl.undo.jsonl")][-1]
+    assert last["state"] == "undone" and last.get("reconciled"), last
+    print("undo is write-ahead: a timed-out or crashed undo is reconciled, not stuck")
+
     # empty folders: innermost first, nothing but folders below, checked live, undo un-trashes
     empty_ops = [{"op": "trash", "src": "old-empty/nothing-here", "src_key": "ESUB"},
                  {"op": "trash", "src": "old-empty", "src_key": "EMPTY"}]

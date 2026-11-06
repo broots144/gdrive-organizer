@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- `apply --undo` is write-ahead and reconciled like the forward path: it journals `undo-intent`
+  before each reverse op, and an undo left at that state (a crash) or failed with a timeout or
+  other transport error is checked against Drive (or the filesystem) before it is tried again.
+  Before, an undo that Drive applied but whose response was lost failed its own precondition on
+  every rerun, so no older op could be undone.
+
 - `apply --batch 0` is refused with a usage error. Before, the first op ran and the run then
   died with ZeroDivisionError.
 

@@ -14,6 +14,7 @@ un-trashes it. Drive empties its trash after 30 days.
 Honest semantics: there is no cross-item atomicity. Each op is individually atomic (local
 rename(2), or one Drive files.update), and the journal is write-ahead (intent, fsync, act, done,
 fsync), so a crash leaves at most one op in doubt, which the next run reconciles by inspection.
+Undo is journaled the same way (undo-intent, act, undone) and reconciled the same way.
 
 Backends:
   drive  (recommended) server-side files.update(addParents/removeParents/name). Keyed by Drive ID,
@@ -160,6 +161,22 @@ class FsBackend:
 
     def adopt_created(self, rec):
         pass
+
+    def undo_reconcile(self, rec, op=None):
+        """An undo without an 'undone' record (crash, or an error after acting): decide from
+        the filesystem whether the reverse already holds. 'undone' writes nothing; 'redo' goes
+        through undo() and all of its checks again."""
+        if rec["op"] == "mkdir":
+            return "redo" if os.path.isdir(self.ab(rec["dst"])) else "undone"
+        if not rec.get("src_raw"):
+            return "halt"
+        src_ok = os.path.lexists(self.ab(rec["src_raw"]))
+        dst_ok = os.path.lexists(self.ab(rec["dst"]))
+        if src_ok and not dst_ok:
+            return "undone"
+        if dst_ok and not src_ok:
+            return "redo"
+        return "halt"
 
     def undo(self, rec, op=None):
         if rec["op"] == "mkdir":
@@ -356,6 +373,35 @@ class DriveBackend:
             return "redo", {}
         return "halt", {}
 
+    def undo_reconcile(self, rec, e=None, op=None):
+        """An undo without an 'undone' record (crash, or a timeout after Drive applied it):
+        decide from Drive whether the reverse already holds. 'undone' writes nothing; 'redo'
+        goes through undo() and all of its checks again; 'halt' needs a person."""
+        for fid in (rec.get("src_key"), rec.get("new_id"), rec.get("old_parent"),
+                    rec.get("new_parent")):
+            if self.guard.is_protected_id(fid):
+                return "halt"
+        if rec["op"] == "trash":
+            cur = self.gd.call(self.svc.files().get(fileId=rec["src_key"],
+                                                    fields="id,parents,trashed"))
+            return "redo" if cur.get("trashed") else "undone"
+        if rec["op"] == "mkdir":
+            if not rec.get("new_id"):
+                return "halt"
+            cur = self.gd.call(self.svc.files().get(fileId=rec["new_id"], fields="id,trashed"))
+            return "undone" if cur.get("trashed") else "redo"
+        cur = self.gd.call(self.svc.files().get(fileId=rec["src_key"],
+                                                fields="id,name,parents,trashed"))
+        if cur.get("trashed"):
+            return "halt"
+        name = shown(cur.get("name"))
+        if cur.get("parents") == [rec.get("old_parent")] and name == shown(rec.get("old_name")):
+            return "undone"
+        if cur.get("parents") == [rec.get("new_parent")] and \
+                name == rec["dst"].rsplit("/", 1)[-1]:
+            return "redo"
+        return "halt"
+
     def undo(self, rec, e=None, op=None):
         """Reverse one journal record, only if Drive still shows exactly what the record says
         was done. `e` is the reviewed plan entry, when the manifest still validates; `op` is the
@@ -539,30 +585,64 @@ def main(argv=None) -> int:
 
 
 def run_undo(be, checked, jpath, a, plan, ops):
-    """`checked` is the journal as check_journal accepted it; it is not read again."""
+    """`checked` is the journal as check_journal accepted it; it is not read again.
+
+    Write-ahead like the forward path: undo-intent, act, undone. An undo left at undo-intent
+    (crash), or failed with an error that may have come after Drive acted (a timeout, not one
+    of our own refusals), is reconciled against live state before it is tried again."""
     upath = jpath + ".undo.jsonl"
     uj = Journal(upath)
-    undone = {r["i"] for r in uj.read() if r.get("state") == "undone"}
+    ustate = last_state(r for r in uj.read() if isinstance(r.get("i"), int))
+    undone = {i for i, r in ustate.items() if r.get("state") == "undone"}
     recs = [r for r in checked if r.get("state") == "done"]
     by_i = {e["i"]: e for e in plan}
-    if isinstance(be, DriveBackend):
+    drive = isinstance(be, DriveBackend)
+    if drive:
         # created folders resolve destination parents; each is verified again before its undo
         for r in recs:
             if r["op"] == "mkdir" and r.get("new_id") and r["i"] not in undone:
                 be.created[g.pkey(r["dst"])] = r["new_id"]
+
+    def reconcile(args):
+        try:
+            return be.undo_reconcile(*args)
+        except Exception:
+            return "halt"
+
     n = 0
     for rec in reversed(recs):
-        if rec["i"] in undone:
+        i = rec["i"]
+        if i in undone:
             continue
+        args = (rec, by_i.get(i), ops[i]) if drive else (rec, ops[i])
+        prev = ustate.get(i) or {}
+        if prev.get("state") == "undo-intent" or (prev.get("state") == "failed"
+                                                   and prev.get("in_doubt")):
+            verdict = reconcile(args)
+            if verdict == "halt":
+                raise SystemExit(f"undo of op {i} is in an unknown state; inspect by hand. "
+                                 f"Undo journal: {upath}")
+            if verdict == "undone":
+                uj.append({"i": i, "state": "undone", "reconciled": True})
+                print(f"undo of op {i}: already applied; recorded as undone", flush=True)
+                n += 1
+                continue
+        uj.append({"i": i, "state": "undo-intent"})
         try:
-            if isinstance(be, DriveBackend):
-                be.undo(rec, by_i.get(rec["i"]), ops[rec["i"]])
-            else:
-                be.undo(rec, ops[rec["i"]])
+            be.undo(*args)
         except Exception as ex:
-            uj.append({"i": rec["i"], "state": "failed", "err": repr(ex)})
-            raise SystemExit(f"undo of op {rec['i']} failed: {ex!r}. Undo journal: {upath}")
-        uj.append({"i": rec["i"], "state": "undone"})
+            # RuntimeError is one of our own checks refusing before acting; anything else (a
+            # timeout, a reset connection) may have come after Drive applied the change
+            in_doubt = not isinstance(ex, RuntimeError)
+            if in_doubt and reconcile(args) == "undone":
+                uj.append({"i": i, "state": "undone", "reconciled": True})
+                print(f"undo of op {i}: {ex!r}, but it was applied; recorded as undone",
+                      flush=True)
+                n += 1
+                continue
+            uj.append({"i": i, "state": "failed", "err": repr(ex), "in_doubt": in_doubt})
+            raise SystemExit(f"undo of op {i} failed: {ex!r}. Undo journal: {upath}")
+        uj.append({"i": i, "state": "undone"})
         n += 1
         if n % a.batch == 0:
             time.sleep(a.pause)
