@@ -61,7 +61,7 @@ If stuck, write a clear BLOCKED entry in STATE.md with exact next steps.
 ```bash
 just check            # lint + all tests + demo + leak check (needs .venv with .[all])
 just verify-phase-N   # one per phase in ROADMAP.md
-python3 tests/test_fs_local.py && python3 tests/test_drive_mock.py && python3 tests/test_rules_to_plan.py && python3 tests/test_peek_limits.py && python3 tests/test_sandbox_settings.py && python3 tests/test_state_guard.py
+python3 tests/test_fs_local.py && python3 tests/test_drive_mock.py && python3 tests/test_rules_to_plan.py && python3 tests/test_peek_limits.py && python3 tests/test_units.py && python3 tests/test_sandbox_settings.py && python3 tests/test_state_guard.py
 gdrive-organizer --help
 ```
 

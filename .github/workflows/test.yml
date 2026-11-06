@@ -31,6 +31,8 @@ jobs:
         run: python tests/test_rules_to_plan.py
       - name: peek parser limits (capped download, zip bomb, time limit)
         run: python tests/test_peek_limits.py
+      - name: unit tests (empty-dirs, drive_api retry and OAuth, journal, backend drift, validate)
+        run: python tests/test_units.py
       - name: sandbox settings cover everything run outside the sandbox
         run: python tests/test_sandbox_settings.py
       - name: state guard rules

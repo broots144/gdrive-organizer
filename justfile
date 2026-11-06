@@ -19,6 +19,7 @@ test:
     {{py}} tests/test_drive_mock.py
     {{py}} tests/test_rules_to_plan.py
     {{py}} tests/test_peek_limits.py
+    {{py}} tests/test_units.py
     {{py}} tests/test_sandbox_settings.py
     {{py}} tests/test_state_guard.py
 
