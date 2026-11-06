@@ -33,7 +33,8 @@ Last updated: 2026-11-06 by Claude Code: 12 verified bugs fixed with regression 
 - Bug sweep (fix/bugs-2026-11-06, unreleased): `validate` refuses an item that is the source of
   two ops and `trash` on an fs index; `apply` matches '/' names in ':' form on reconcile and
   undo, escapes backslashes in the mkdir reconcile query, refuses `--batch` < 1, sends folder
-  creates once, journals undo write-ahead (`undo-intent`) and reconciles it, and drops a torn
+  creates once (retrying only rate limits), journals undo write-ahead (`undo-intent`) and reconciles it (legacy failed
+  records without `in_doubt` count as in doubt), and drops a torn
   last journal line; `drive_api.call` retries transport errors for GET requests only; every
   command that reads an index refuses one without the `finished` marker (`core.require_complete`).
   Each has a regression test in `tests/test_drive_mock.py`, `test_fs_local.py` or

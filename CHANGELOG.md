@@ -18,12 +18,16 @@
 - `apply` (drive) sends each folder create once instead of retrying it on 5xx. Drive can commit
   a create and still answer 5xx, so each retry could leave another same-name empty folder that
   no journal record names. A failed create is journaled and `--retry-failed` reconciles it.
+  Rate-limit refusals (429, 403 rateLimitExceeded or userRateLimitExceeded) still back off and
+  retry, since Drive applied nothing (`drive_api.call(..., rate_limit_only=True)`).
 
 - `apply --undo` is write-ahead and reconciled like the forward path: it journals `undo-intent`
   before each reverse op, and an undo left at that state (a crash) or failed with a timeout or
   other transport error is checked against Drive (or the filesystem) before it is tried again.
   Before, an undo that Drive applied but whose response was lost failed its own precondition on
-  every rerun, so no older op could be undone.
+  every rerun, so no older op could be undone. A failed undo record from an older undo journal
+  (no `in_doubt` field) is treated as in doubt and reconciled too. If the reconcile itself
+  raises, the halt message names the exception.
 
 - `apply --batch 0` is refused with a usage error. Before, the first op ran and the run then
   died with ZeroDivisionError.

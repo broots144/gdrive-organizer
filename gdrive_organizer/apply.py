@@ -309,12 +309,13 @@ class DriveBackend:
     def mkdir(self, e):
         pid = self.folder_id(g.parent_of(e["dst"]))
         name = e["dst"].rsplit("/", 1)[-1]
-        # One attempt only: Drive can commit a create and still answer 5xx, and a retry would
-        # make a second folder of the same name. A failure is journaled, and --retry-failed
-        # reconciles by looking the folder up before creating it again.
+        # Rate limits only: Drive can commit a create and still answer 5xx or time out, and a
+        # retry would make a second folder of the same name. A 429 or 403 rateLimitExceeded
+        # means nothing was created, so those are retried. Any other failure is journaled, and
+        # --retry-failed reconciles by looking the folder up before creating it again.
         f = self.gd.call(self.svc.files().create(
             body={"name": name, "mimeType": g.FOLDER_MIME, "parents": [pid]}, fields="id"),
-            tries=1)
+            rate_limit_only=True)
         self.created[g.pkey(e["dst"])] = f["id"]
         return {"new_id": f["id"], "parent": pid}
 
@@ -641,10 +642,11 @@ def run_undo(be, checked, jpath, a, plan, ops):
                 be.created[g.pkey(r["dst"])] = r["new_id"]
 
     def reconcile(args):
+        """Returns (verdict, why). A fault in the reconcile itself halts too, but says so."""
         try:
-            return be.undo_reconcile(*args)
-        except Exception:
-            return "halt"
+            return be.undo_reconcile(*args), ""
+        except Exception as ex:
+            return "halt", f" (reconcile raised {ex!r})"
 
     n = 0
     for rec in reversed(recs):
@@ -653,12 +655,13 @@ def run_undo(be, checked, jpath, a, plan, ops):
             continue
         args = (rec, by_i.get(i), ops[i]) if drive else (rec, ops[i])
         prev = ustate.get(i) or {}
+        # a failed record with no in_doubt key predates that field: treat it as in doubt
         if prev.get("state") == "undo-intent" or (prev.get("state") == "failed"
-                                                   and prev.get("in_doubt")):
-            verdict = reconcile(args)
+                                                   and prev.get("in_doubt", True)):
+            verdict, why = reconcile(args)
             if verdict == "halt":
-                raise SystemExit(f"undo of op {i} is in an unknown state; inspect by hand. "
-                                 f"Undo journal: {upath}")
+                raise SystemExit(f"undo of op {i} is in an unknown state{why}; inspect by "
+                                 f"hand. Undo journal: {upath}")
             if verdict == "undone":
                 uj.append({"i": i, "state": "undone", "reconciled": True})
                 print(f"undo of op {i}: already applied; recorded as undone", flush=True)
@@ -671,7 +674,7 @@ def run_undo(be, checked, jpath, a, plan, ops):
             # RuntimeError is one of our own checks refusing before acting; anything else (a
             # timeout, a reset connection) may have come after Drive applied the change
             in_doubt = not isinstance(ex, RuntimeError)
-            if in_doubt and reconcile(args) == "undone":
+            if in_doubt and reconcile(args)[0] == "undone":
                 uj.append({"i": i, "state": "undone", "reconciled": True})
                 print(f"undo of op {i}: {ex!r}, but it was applied; recorded as undone",
                       flush=True)

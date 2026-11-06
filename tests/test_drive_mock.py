@@ -57,6 +57,7 @@ ITEMS = {
 CALLS = []
 TIMEOUT_AFTER_APPLY = set()  # file IDs whose next update applies, then times out
 CREATE_FAILS = {}  # folder name -> exception its next create raises after creating it
+CREATE_REFUSES = {}  # folder name -> exception its next create raises without creating it
 
 
 class Req:
@@ -124,6 +125,8 @@ class Files:
         CALLS.append(("create", body["name"]))
 
         def run(h):
+            if body["name"] in CREATE_REFUSES:
+                raise CREATE_REFUSES.pop(body["name"])
             nid = f"NEW{len(self.st)}"
             self.st[nid] = {"name": body["name"], "mimeType": body["mimeType"],
                             "parents": list(body["parents"])}
@@ -194,6 +197,29 @@ def check_transport_retry():
     finally:
         gdrive.time.sleep = real_sleep
     print("drive_api.call retries transport errors for reads, never for writes")
+    # rate_limit_only (files.create): retry 429 and 403 rate limits, which Drive refuses
+    # without applying; raise a 5xx or 403 backendError at once, since it may have applied
+    from googleapiclient.errors import HttpError
+    import httplib2
+
+    def herr(status, reason=None):
+        body = json.dumps({"error": {"errors": [{"reason": reason}]}}) if reason else "{}"
+        return HttpError(httplib2.Response({"status": status}), body.encode())
+    real_sleep, gdrive.time.sleep = gdrive.time.sleep, lambda s: None
+    try:
+        w = Flaky("POST", [herr(429), herr(403, "rateLimitExceeded"),
+                           herr(403, "userRateLimitExceeded")])
+        assert gdrive.call(w, rate_limit_only=True) == {"ok": True} and w.n == 4, w.n
+        for e in (herr(503), herr(500), herr(403, "backendError"), TimeoutError("t")):
+            w = Flaky("POST", [e])
+            try:
+                gdrive.call(w, rate_limit_only=True)
+                raise AssertionError(f"a create was retried after {e!r}")
+            except (HttpError, TimeoutError):
+                assert w.n == 1, (e, w.n)
+    finally:
+        gdrive.time.sleep = real_sleep
+    print("drive_api.call(rate_limit_only) retries rate limits only")
 
 
 def main():
@@ -389,6 +415,22 @@ def main():
     assert len(made) == 1, made
     assert run("apply", f_args + ["--undo"]) == 0 and STATE[made[0]].get("trashed") is True
     print("a create that fails after committing is not retried; reconcile finds the one folder")
+    # a rate-limited create made nothing, so it is retried inside the same run
+    with open("plan-429.jsonl", "w") as fh:
+        fh.write(json.dumps({"op": "mkdir", "dst": "Created429"}) + "\n")
+    sha_r = g.sha256_file("plan-429.jsonl")
+    r_args = ["--backend", "drive", "--db", "d.sqlite", "--config", "cfg.json",
+              "--manifest", "plan-429.jsonl", "--execute", "--confirm-sha", sha_r, "--pause", "0"]
+    CREATE_REFUSES["Created429"] = HttpError(httplib2.Response({"status": 429}), b"{}")
+    real_sleep, gdrive.time.sleep = gdrive.time.sleep, lambda s: None
+    try:
+        assert run("apply", r_args) == 0
+    finally:
+        gdrive.time.sleep = real_sleep
+    made = [k for k, d in STATE.items() if d["name"] == "Created429"]
+    assert len(made) == 1 and not CREATE_REFUSES, made
+    assert run("apply", r_args + ["--undo"]) == 0 and STATE[made[0]].get("trashed") is True
+    print("a rate-limited create is retried in the same run and makes one folder")
 
     # --batch 0 is refused up front; before, the first op ran and then n % 0 raised
     with open("plan-b0.jsonl", "w") as fh:
@@ -627,6 +669,42 @@ def main():
     assert rc == 0, rc
     last = [json.loads(x) for x in open("trash-crash.jsonl.journal.jsonl.undo.jsonl")][-1]
     assert last["state"] == "undone" and last.get("reconciled"), last
+    # (c) an undo journal from before in_doubt existed: a failed record without the key is
+    # treated as in doubt and reconciled, not sent straight to undo (which would hit drift)
+    with open("trash-legacy.jsonl", "w") as fh:
+        fh.write(json.dumps({"op": "trash", "src": px2, "src_key": "PX2", "keep_key": "PX1"}) + "\n")
+    sha_l = g.sha256_file("trash-legacy.jsonl")
+    l_args = ["--backend", "drive", "--db", "d.sqlite", "--config", "cfg.json",
+              "--manifest", "trash-legacy.jsonl", "--execute", "--confirm-sha", sha_l, "--pause", "0"]
+    assert run("apply", l_args) == 0 and STATE["PX2"]["trashed"] is True
+    STATE["PX2"]["trashed"] = False  # the old run's untrash landed, then its response timed out
+    with open("trash-legacy.jsonl.journal.jsonl.undo.jsonl", "w") as fh:
+        fh.write(json.dumps({"i": 0, "state": "failed", "err": "TimeoutError()"}) + "\n")
+    rc = run("apply", l_args + ["--undo"])
+    assert rc == 0, rc
+    last = [json.loads(x) for x in open("trash-legacy.jsonl.journal.jsonl.undo.jsonl")][-1]
+    assert last["state"] == "undone" and last.get("reconciled"), last
+    # (d) a fault inside undo_reconcile halts, and the message names it
+    from gdrive_organizer import apply as apply_mod
+    with open("trash-fault.jsonl", "w") as fh:
+        fh.write(json.dumps({"op": "trash", "src": px2, "src_key": "PX2", "keep_key": "PX1"}) + "\n")
+    sha_f = g.sha256_file("trash-fault.jsonl")
+    t_args = ["--backend", "drive", "--db", "d.sqlite", "--config", "cfg.json",
+              "--manifest", "trash-fault.jsonl", "--execute", "--confirm-sha", sha_f, "--pause", "0"]
+    assert run("apply", t_args) == 0 and STATE["PX2"]["trashed"] is True
+    with open("trash-fault.jsonl.journal.jsonl.undo.jsonl", "w") as fh:
+        fh.write(json.dumps({"i": 0, "state": "undo-intent"}) + "\n")
+    real_ur = apply_mod.DriveBackend.undo_reconcile
+
+    def boom(self, *a):
+        raise KeyError("old_name")
+    apply_mod.DriveBackend.undo_reconcile = boom
+    try:
+        rc = run("apply", t_args + ["--undo"])
+    finally:
+        apply_mod.DriveBackend.undo_reconcile = real_ur
+    assert "unknown state (reconcile raised KeyError('old_name'))" in str(rc), rc
+    assert run("apply", t_args + ["--undo"]) == 0 and STATE["PX2"]["trashed"] is False
     print("undo is write-ahead: a timed-out or crashed undo is reconciled, not stuck")
 
     # empty folders: innermost first, nothing but folders below, checked live, undo un-trashes
