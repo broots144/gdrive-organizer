@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- `apply` (drive) sends each folder create once instead of retrying it on 5xx. Drive can commit
+  a create and still answer 5xx, so each retry could leave another same-name empty folder that
+  no journal record names. A failed create is journaled and `--retry-failed` reconciles it.
+
 - `apply --undo` is write-ahead and reconciled like the forward path: it journals `undo-intent`
   before each reverse op, and an undo left at that state (a crash) or failed with a timeout or
   other transport error is checked against Drive (or the filesystem) before it is tried again.

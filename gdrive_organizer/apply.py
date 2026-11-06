@@ -277,8 +277,12 @@ class DriveBackend:
     def mkdir(self, e):
         pid = self.folder_id(g.parent_of(e["dst"]))
         name = e["dst"].rsplit("/", 1)[-1]
+        # One attempt only: Drive can commit a create and still answer 5xx, and a retry would
+        # make a second folder of the same name. A failure is journaled, and --retry-failed
+        # reconciles by looking the folder up before creating it again.
         f = self.gd.call(self.svc.files().create(
-            body={"name": name, "mimeType": g.FOLDER_MIME, "parents": [pid]}, fields="id"))
+            body={"name": name, "mimeType": g.FOLDER_MIME, "parents": [pid]}, fields="id"),
+            tries=1)
         self.created[g.pkey(e["dst"])] = f["id"]
         return {"new_id": f["id"], "parent": pid}
 

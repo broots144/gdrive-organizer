@@ -319,6 +319,25 @@ def main():
     assert rc == 0 and STATE[made[0]].get("trashed") is True, rc
     print("mkdir reconcile escapes backslash and quote in the Drive query")
 
+    # Drive can commit a create and still answer 503: the create must not be retried (each
+    # retry would add a same-name folder); --retry-failed reconciles to the one folder
+    from googleapiclient.errors import HttpError
+    import httplib2
+    with open("plan-503.jsonl", "w") as fh:
+        fh.write(json.dumps({"op": "mkdir", "dst": "Created503"}) + "\n")
+    sha_5 = g.sha256_file("plan-503.jsonl")
+    f_args = ["--backend", "drive", "--db", "d.sqlite", "--config", "cfg.json",
+              "--manifest", "plan-503.jsonl", "--execute", "--confirm-sha", sha_5, "--pause", "0"]
+    CREATE_FAILS["Created503"] = HttpError(httplib2.Response({"status": 503}), b"{}")
+    rc = run("apply", f_args)
+    assert "503" in str(rc), rc
+    assert sum(d["name"] == "Created503" for d in STATE.values()) == 1
+    assert run("apply", f_args + ["--retry-failed"]) == 0
+    made = [k for k, d in STATE.items() if d["name"] == "Created503"]
+    assert len(made) == 1, made
+    assert run("apply", f_args + ["--undo"]) == 0 and STATE[made[0]].get("trashed") is True
+    print("a create that fails after committing is not retried; reconcile finds the one folder")
+
     # --batch 0 is refused up front; before, the first op ran and then n % 0 raised
     with open("plan-b0.jsonl", "w") as fh:
         fh.write(json.dumps({"op": "mkdir", "dst": "Batch0"}) + "\n")
