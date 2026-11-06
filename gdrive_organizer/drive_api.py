@@ -54,9 +54,12 @@ def service(scope_key: str, client_secret: str, token_path: str | None):
         if not token_path:
             return build("drive", "v3", credentials=creds, cache_discovery=False)
         os.makedirs(os.path.dirname(os.path.abspath(token_path)), exist_ok=True)
-        with open(token_path, "w") as fh:
+        # Created 0600 (never readable by others, whatever the umask), and an existing file is
+        # tightened before the token is written into it.
+        fd = os.open(token_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w") as fh:
             fh.write(creds.to_json())
-        os.chmod(token_path, 0o600)
     return build("drive", "v3", credentials=creds, cache_discovery=False)
 
 

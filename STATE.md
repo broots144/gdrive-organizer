@@ -1,6 +1,6 @@
 # Current Build State
 
-Last updated: 2026-11-06 by Claude Code: 12 verified bugs fixed with regression tests (fix/bugs-2026-11-06): undo write-ahead and reconcile, single-attempt folder create, transport retries for reads, partial-index refusal, torn journal line, validate source/trash checks, '/' names, query escaping, --batch 0.
+Last updated: 2026-11-06 by Claude Code: `tests/test_units.py` (tests/coverage-2026-11-06c) raises statement coverage of the package from 82% to 93% (estimate: coverage.py 7.17, all test files plus the demo, subprocesses included). Review fixes: the OAuth token file is now created 0600 by `os.open` (before, `open()` then `chmod` left it umask-readable for a moment), and the Drive backend refuses a move or trash naming a protected id before any Drive call.
 
 ## Phases
 
@@ -21,8 +21,10 @@ Last updated: 2026-11-06 by Claude Code: 12 verified bugs fixed with regression 
 - Core has no runtime dependencies; extras `api` (google-api-python-client>=2.201.0,
   google-auth-oauthlib>=1.5.0) and `peek` (pypdf>=6.21.4, python-docx>=1.2.0). Python 3.9+ for
   core and `peek`; the `api` floors (so `all`) need Python 3.10+ (fact: PyPI `requires_python`).
-- CI (`.github/workflows/test.yml`): ubuntu and macOS x Python 3.10 and 3.13 run the five test
-  files, the state guard rules, the demo and a CLI smoke. On PRs a `state-guard` job fails when
+- CI (`.github/workflows/test.yml`): ubuntu and macOS x Python 3.10 and 3.13 run the six test
+  files (including `tests/test_units.py`: empty-dirs, drive_api retry and OAuth plumbing with
+  fake Google classes, CLI dispatch, journal and check_journal edges, fs and drive backend drift,
+  reconcile and undo binding, every validate error branch), the state guard rules, the demo and a CLI smoke. On PRs a `state-guard` job fails when
   the package, `scripts/` or `pyproject.toml` change without STATE.md (D-013).
 - Dependabot: weekly, 3 day cooldown (7 for pip majors), one group for Python ranges and two
   for actions; n0's merger squash-merges green PRs (ADR-089). Last run on main green 2026-11-01.
@@ -39,16 +41,21 @@ Last updated: 2026-11-06 by Claude Code: 12 verified bugs fixed with regression 
   command that reads an index refuses one without the `finished` marker (`core.require_complete`).
   Each has a regression test in `tests/test_drive_mock.py`, `test_fs_local.py` or
   `test_rules_to_plan.py`.
+- Token files (`--token`) are created 0600 with `os.open` and an existing one is `fchmod` 0600
+  before the token is written, so no other local user can read it at any point;
+  `DriveBackend.move` and `.trash` refuse a protected src, src parent or keep id before any
+  Drive call (defense in depth behind `validate`). Both in `tests/test_units.py`.
 
-### Verify output (2026-11-06, macOS, Python 3.15, `just check` with the worktree venv, after the bug sweep)
+### Verify output (2026-11-06, macOS, Python 3.15, `just check` with the worktree venv, after test_units.py)
 
 ```
 ALL FS TESTS PASSED
 ALL DRIVE MOCK TESTS PASSED
 dupes_to_plan: ok (3 trash ops, 0 validation errors)
 ALL PEEK LIMIT TESTS PASSED
+ALL UNIT TESTS PASSED (16 groups)
 sandbox denyWrite covers 27 owner-run paths; 3 assistant outputs stay writable
-7 owner-run tests/scripts ignore 48 root-level stdlib-named packages
+8 owner-run tests/scripts ignore 48 root-level stdlib-named packages
 ALL SANDBOX SETTINGS TESTS PASSED
 ALL STATE GUARD TESTS PASSED
 demo and CLI smoke ok

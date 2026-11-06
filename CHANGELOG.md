@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- A token file written with `--token` is created 0600 from the start. Before, it was opened
+  with the default umask (often 0644) and only then chmod 0600, so for a moment another local
+  user could read the OAuth refresh token. An existing token file is tightened before rewrite.
+
+- `apply` (drive) refuses a move or trash whose source, source parent or copy to keep is a
+  protected folder id before sending any Drive request (defense in depth behind `validate`).
+
 - `apply` drops a torn last journal line (a crash or full disk mid-write) with a warning and
   truncates it before the next record, instead of dying with JSONDecodeError on every later run.
   A malformed line anywhere else is refused with its line number.

@@ -56,7 +56,7 @@ SHADOWED = ["ctypes", "sqlite3", "hashlib", "unicodedata", "random", "json", "su
             "threading", "platform", "struct", "signal", "locale", "html", "xml", "csv",
             "secrets", "hmac", "getpass", "socket", "ssl", "queue", "math", "heapq", "bisect"]
 OWNER_RUNS = [["tests/test_fs_local.py"], ["tests/test_drive_mock.py"],
-              ["tests/test_rules_to_plan.py"], ["tests/test_peek_limits.py"],
+              ["tests/test_rules_to_plan.py"], ["tests/test_peek_limits.py"], ["tests/test_units.py"],
               ["scripts/rules_to_plan.py", "--help"], ["scripts/dupes_to_plan.py", "--help"],
               ["scripts/empty_dirs_to_plan.py", "--help"]]
 
