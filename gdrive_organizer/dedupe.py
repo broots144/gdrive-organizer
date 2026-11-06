@@ -51,6 +51,7 @@ def main(argv=None) -> int:
     cfg = g.load_config(a.config)
     guard = g.Guard(cfg)
     db = g.open_db(a.db)
+    g.require_complete(db)
     g.load_protected(db, guard)
     pol = runpy.run_path(a.policy)
     keep_order = [g.pkey(p) for p in pol.get("KEEP_ORDER", [])]

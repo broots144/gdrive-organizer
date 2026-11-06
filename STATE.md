@@ -1,6 +1,6 @@
 # Current Build State
 
-Last updated: 2026-11-06 by Claude Code: pypdf 7.0.0 held for the 7 day major cooldown; Python 3.10 facts for the extras recorded (deps/upgrade-2026-11-06).
+Last updated: 2026-11-06 by Claude Code: 12 verified bugs fixed with regression tests (fix/bugs-2026-11-06): undo write-ahead and reconcile, single-attempt folder create, transport retries for reads, partial-index refusal, torn journal line, validate source/trash checks, '/' names, query escaping, --batch 0.
 
 ## Phases
 
@@ -30,9 +30,17 @@ Last updated: 2026-11-06 by Claude Code: pypdf 7.0.0 held for the 7 day major co
   now including `./justfile`; `tests/test_sandbox_settings.py` enforces the list (D-008).
 - Personal Drive work happens only under gitignored `private/`; `scripts/leak_check.py` guards
   commits via hooks from `scripts/install_hooks.sh` (D-006).
-- No open PRs or issues as of 2026-11-06.
+- Bug sweep (fix/bugs-2026-11-06, unreleased): `validate` refuses an item that is the source of
+  two ops and `trash` on an fs index; `apply` matches '/' names in ':' form on reconcile and
+  undo, escapes backslashes in the mkdir reconcile query, refuses `--batch` < 1, sends folder
+  creates once (retrying only rate limits), journals undo write-ahead (`undo-intent`) and reconciles it (legacy failed
+  records without `in_doubt` count as in doubt), and drops a torn
+  last journal line; `drive_api.call` retries transport errors for GET requests only; every
+  command that reads an index refuses one without the `finished` marker (`core.require_complete`).
+  Each has a regression test in `tests/test_drive_mock.py`, `test_fs_local.py` or
+  `test_rules_to_plan.py`.
 
-### Verify output (2026-11-06, macOS, Python 3.15, `just check` with the repo venv)
+### Verify output (2026-11-06, macOS, Python 3.15, `just check` with the worktree venv, after the bug sweep)
 
 ```
 ALL FS TESTS PASSED

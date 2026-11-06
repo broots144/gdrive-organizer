@@ -26,7 +26,8 @@ SCOPES = {
 }
 
 RETRY_STATUS = {429, 500, 502, 503, 504}
-RETRY_REASONS = {"rateLimitExceeded", "userRateLimitExceeded", "backendError", "internalError"}
+RATE_LIMIT_REASONS = {"rateLimitExceeded", "userRateLimitExceeded"}
+RETRY_REASONS = RATE_LIMIT_REASONS | {"backendError", "internalError"}
 
 
 def service(scope_key: str, client_secret: str, token_path: str | None):
@@ -68,18 +69,51 @@ def _reason(err) -> str:
         return ""
 
 
-def call(req, tries: int = 8):
-    """Execute a googleapiclient request with exponential backoff on rate limits and 5xx."""
+def _transport_errors():
+    """Network failures below HTTP: timeouts, resets, TLS and DNS errors. httplib2 is how
+    googleapiclient talks to Drive; it is absent only in tests with a fake client."""
+    errs = (OSError,)  # TimeoutError, socket.timeout, ConnectionError and ssl.SSLError
+    try:
+        import httplib2
+        errs += (httplib2.HttpLib2Error,)
+    except ImportError:
+        pass
+    return errs
+
+
+def call(req, tries: int = 8, idempotent: bool | None = None, rate_limit_only: bool = False):
+    """Execute a googleapiclient request with exponential backoff on rate limits and 5xx.
+
+    Transport errors (a timeout, a reset connection) are retried too, but only for idempotent
+    requests: by default those whose HTTP method is GET (get, list, export, get_media). A
+    create or update may have been applied before the connection dropped, so it is not resent;
+    apply's journal reconciles it instead.
+
+    rate_limit_only=True retries only rate-limit refusals (429, or 403 rateLimitExceeded /
+    userRateLimitExceeded), which Drive answers without applying the request. A 5xx, a 403
+    backendError or a transport error is raised at once: the request may have been applied.
+    Use it for non-idempotent writes such as files.create."""
     from googleapiclient.errors import HttpError
 
+    if idempotent is None:
+        idempotent = getattr(req, "method", None) == "GET"
+    transport = _transport_errors()
     for attempt in range(tries):
         try:
             return req.execute()
         except HttpError as e:
             status = getattr(e.resp, "status", 0)
-            if status in RETRY_STATUS or (status == 403 and _reason(e) in RETRY_REASONS):
+            if rate_limit_only:
+                retry = status == 429 or (status == 403 and _reason(e) in RATE_LIMIT_REASONS)
+            else:
+                retry = status in RETRY_STATUS or (status == 403 and _reason(e) in RETRY_REASONS)
+            if retry:
                 if attempt == tries - 1:
                     raise
                 time.sleep(min(64, 2 ** attempt) + random.random())
                 continue
             raise
+        except transport:
+            if not idempotent or attempt == tries - 1:
+                raise
+            time.sleep(min(64, 2 ** attempt) + random.random())

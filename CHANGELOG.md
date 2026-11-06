@@ -2,6 +2,51 @@
 
 ## Unreleased
 
+- `apply` drops a torn last journal line (a crash or full disk mid-write) with a warning and
+  truncates it before the next record, instead of dying with JSONDecodeError on every later run.
+  A malformed line anywhere else is refused with its line number.
+
+- `validate`, `apply`, `plan`, `report`, `peek`, `dedupe` and `empty-dirs` refuse an index with no
+  `finished` marker. An index run that died partway left committed rows with no atomic or
+  sensitive marks, so `peek` could read sensitive-named files and `plan` or `validate` could
+  split an atomic unit.
+
+- The Drive client retries transport errors (timeouts, reset connections, TLS and DNS failures)
+  with the same backoff as 5xx, for read requests only. Before, one network blip aborted a whole
+  `index-drive` run. Creates and updates are still not resent; the apply journal reconciles them.
+
+- `apply` (drive) sends each folder create once instead of retrying it on 5xx. Drive can commit
+  a create and still answer 5xx, so each retry could leave another same-name empty folder that
+  no journal record names. A failed create is journaled and `--retry-failed` reconciles it.
+  Rate-limit refusals (429, 403 rateLimitExceeded or userRateLimitExceeded) still back off and
+  retry, since Drive applied nothing (`drive_api.call(..., rate_limit_only=True)`).
+
+- `apply --undo` is write-ahead and reconciled like the forward path: it journals `undo-intent`
+  before each reverse op, and an undo left at that state (a crash) or failed with a timeout or
+  other transport error is checked against Drive (or the filesystem) before it is tried again.
+  Before, an undo that Drive applied but whose response was lost failed its own precondition on
+  every rerun, so no older op could be undone. A failed undo record from an older undo journal
+  (no `in_doubt` field) is treated as in doubt and reconciled too. If the reconcile itself
+  raises, the halt message names the exception.
+
+- `apply --batch 0` is refused with a usage error. Before, the first op ran and the run then
+  died with ZeroDivisionError.
+
+- `apply` (drive) escapes backslashes, not only quotes, in the folder name its mkdir reconcile
+  sends to `files.list`. Before, a backslash in a planned name made the query fail, match the
+  wrong folder (the name could inject an `or` clause), or miss and create a duplicate. A
+  reconcile that raises now stops with the op index instead of a traceback.
+
+- `validate` refuses `trash` ops on an fs-backend index. Before, such a manifest validated and
+  `apply` ran the ops in front of the first trash op, then aborted.
+
+- `apply` (drive) compares a live name with '/' in its ':' form when it reconciles or undoes a
+  move. Before, a move that kept such a name could never be undone, and after a timeout the retry
+  halted with 'unknown state'.
+
+- `validate` refuses an item named as the source of two ops (move and move, move and trash).
+  Before, both passed and `apply` failed partway, after the first op had run.
+
 - Repo-state files: STATE.md, ROADMAP.md, LESSONS.md, docs/DECISIONS.md, docs/plans/, and a
   justfile with `check` and per-phase verify targets. A `state-guard` CI job fails a PR that
   changes code without STATE.md (`chore:`/`deps:` titles exempt). The sandbox denies writes to

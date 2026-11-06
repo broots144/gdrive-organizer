@@ -4,7 +4,9 @@ Asserts: the protected folder's ID never appears in any list query or get/update
 shortcut to it is quarantined; duplicate names force src_key; moves are ID based and undo
 restores parents and names exactly.
 """
+import contextlib
 import copy
+import io
 import json
 import os
 import re
@@ -54,6 +56,8 @@ ITEMS = {
 }
 CALLS = []
 TIMEOUT_AFTER_APPLY = set()  # file IDs whose next update applies, then times out
+CREATE_FAILS = {}  # folder name -> exception its next create raises after creating it
+CREATE_REFUSES = {}  # folder name -> exception its next create raises without creating it
 
 
 class Req:
@@ -83,12 +87,14 @@ class Files:
         CALLS.append(("list", q))
         m = re.match(r"'([^']+)' in parents", q)
         pid = m.group(1)
-        nm = re.search(r"name = '([^']+)'", q)
+        # a Drive query literal: a backslash escapes the next char, a bare ' ends it
+        nm = re.search(r"name = '((?:[^'\\]|\\.)*)'", q)
+        name = re.sub(r"\\(.)", r"\1", nm.group(1)) if nm else None
 
         def run(h):
             kids = [self._meta(k) for k, d in self.st.items()
                     if pid in d["parents"] and not d.get("trashed")
-                    and (not nm or d["name"] == nm.group(1))]
+                    and (name is None or d["name"] == name)]
             return {"files": kids}
         return Req(run)
 
@@ -119,9 +125,13 @@ class Files:
         CALLS.append(("create", body["name"]))
 
         def run(h):
+            if body["name"] in CREATE_REFUSES:
+                raise CREATE_REFUSES.pop(body["name"])
             nid = f"NEW{len(self.st)}"
             self.st[nid] = {"name": body["name"], "mimeType": body["mimeType"],
                             "parents": list(body["parents"])}
+            if body["name"] in CREATE_FAILS:
+                raise CREATE_FAILS.pop(body["name"])
             return {"id": nid}
         return Req(run)
 
@@ -155,6 +165,63 @@ def run(mod, argv):
         return e.code
 
 
+def check_transport_retry():
+    """drive_api.call retries timeouts and resets for GETs only: a write may have landed."""
+    class Flaky:
+        def __init__(self, method, errors):
+            self.method, self.errors, self.n = method, list(errors), 0
+
+        def execute(self):
+            self.n += 1
+            if self.errors:
+                raise self.errors.pop(0)
+            return {"ok": True}
+    import socket
+    real_sleep, gdrive.time.sleep = gdrive.time.sleep, lambda s: None
+    try:
+        r = Flaky("GET", [ConnectionResetError(54, "reset"), socket.timeout("timed out")])
+        assert gdrive.call(r) == {"ok": True} and r.n == 3, r.n
+        for method in ("PATCH", "POST"):
+            w = Flaky(method, [TimeoutError("timed out")])
+            try:
+                gdrive.call(w)
+                raise AssertionError("a write was retried after a transport error")
+            except TimeoutError:
+                assert w.n == 1, w.n
+        r = Flaky("GET", [OSError("down")] * 3)
+        try:
+            gdrive.call(r, tries=3)
+            raise AssertionError("gave up too late")
+        except OSError:
+            assert r.n == 3, r.n
+    finally:
+        gdrive.time.sleep = real_sleep
+    print("drive_api.call retries transport errors for reads, never for writes")
+    # rate_limit_only (files.create): retry 429 and 403 rate limits, which Drive refuses
+    # without applying; raise a 5xx or 403 backendError at once, since it may have applied
+    from googleapiclient.errors import HttpError
+    import httplib2
+
+    def herr(status, reason=None):
+        body = json.dumps({"error": {"errors": [{"reason": reason}]}}) if reason else "{}"
+        return HttpError(httplib2.Response({"status": status}), body.encode())
+    real_sleep, gdrive.time.sleep = gdrive.time.sleep, lambda s: None
+    try:
+        w = Flaky("POST", [herr(429), herr(403, "rateLimitExceeded"),
+                           herr(403, "userRateLimitExceeded")])
+        assert gdrive.call(w, rate_limit_only=True) == {"ok": True} and w.n == 4, w.n
+        for e in (herr(503), herr(500), herr(403, "backendError"), TimeoutError("t")):
+            w = Flaky("POST", [e])
+            try:
+                gdrive.call(w, rate_limit_only=True)
+                raise AssertionError(f"a create was retried after {e!r}")
+            except (HttpError, TimeoutError):
+                assert w.n == 1, (e, w.n)
+    finally:
+        gdrive.time.sleep = real_sleep
+    print("drive_api.call(rate_limit_only) retries rate limits only")
+
+
 def main():
     tmp = tempfile.mkdtemp()
     os.chdir(tmp)
@@ -172,6 +239,24 @@ def main():
     keys = {r[0] for r in db.execute("select key from items")}
     assert not keys & {"LEGALID", "L1", "L2", "LSUB", "SC"}, keys
     print("index_drive boundary OK; items:", len(keys))
+
+    # an index whose run died partway has no 'finished' marker (and no atomic or sensitive
+    # marks): every command that reads it must refuse it
+    import shutil
+    shutil.copy("d.sqlite", "partial.sqlite")
+    with sqlite3.connect("partial.sqlite") as pdb:
+        pdb.execute("DELETE FROM meta WHERE k='finished'")
+    open("empty.jsonl", "w").close()
+    for mod, extra in (("validate", ["--manifest", "empty.jsonl"]),
+                       ("report", ["--quarantine-out", "q.txt"]),
+                       ("peek", ["--client-secret", "x"]),
+                       ("apply", ["--backend", "drive", "--manifest", "empty.jsonl"]),
+                       ("plan", ["--rules", "none.py", "--out", "none.jsonl"]),
+                       ("dedupe", ["--policy", "none.py", "--out", "none.jsonl"]),
+                       ("empty_dirs", ["--policy", "none.py", "--out", "none.jsonl"])):
+        rc = run(mod, ["--db", "partial.sqlite", "--config", "cfg.json"] + extra)
+        assert "index is incomplete" in str(rc), (mod, rc)
+    print("partial index refused by validate, report, peek, apply, plan, dedupe, empty-dirs")
 
     with open("plan.jsonl", "w") as fh:
         for op in [
@@ -196,6 +281,27 @@ def main():
                    "resolves to 0 items"):
         assert needle in joined, (needle, joined)
     print("validator negative cases OK")
+    # one item may be the source of at most one op (move+move, move+trash, trash+move);
+    # two different items that share a name (S1, S2) stay separately movable
+    px2 = "homelab/proxmox-2021/vzdump-100 copy.tar.gz"
+    for name, ops in (
+            ("twice-move", [{"op": "move", "src": "Scan_001.pdf", "src_key": "S1", "dst": "a.pdf"},
+                            {"op": "move", "src": "Scan_001.pdf", "src_key": "S1", "dst": "b.pdf"}]),
+            ("move-trash", [{"op": "move", "src": px2, "src_key": "PX2", "dst": "c.tar.gz"},
+                            {"op": "trash", "src": px2, "src_key": "PX2", "keep_key": "PX1"}]),
+            ("trash-move", [{"op": "trash", "src": px2, "src_key": "PX2", "keep_key": "PX1"},
+                            {"op": "move", "src": px2, "src_key": "PX2", "dst": "c.tar.gz"}])):
+        with open(name + ".jsonl", "w") as fh:
+            fh.write("".join(json.dumps(op) + "\n" for op in ops))
+        errs, _, _ = validate.validate(g.open_db("d.sqlite"), cfg,
+                                       validate.load_manifest(name + ".jsonl"))
+        assert any("already a source of an earlier op" in e for e in errs), (name, errs)
+    with open("pair.jsonl", "w") as fh:
+        for k, d in (("S1", "a.pdf"), ("S2", "b.pdf")):
+            fh.write(json.dumps({"op": "move", "src": "Scan_001.pdf", "src_key": k, "dst": d}) + "\n")
+    errs, _, _ = validate.validate(g.open_db("d.sqlite"), cfg, validate.load_manifest("pair.jsonl"))
+    assert not errs, errs
+    print("validator refuses an item named as the source of two ops")
     errs, warns, plan = validate.validate(g.open_db("d.sqlite"), cfg,
                                          validate.load_manifest("plan.jsonl"))
     assert not errs, errs
@@ -246,6 +352,125 @@ def main():
         assert STATE[k]["parents"] == d["parents"] and STATE[k]["name"] == d["name"], k
     assert STATE[arch2].get("trashed") is True
     print("timeout after apply OK: retry reconciled, undo restored everything")
+
+    # a Drive name with '/' shows as ':' in the index; a move that keeps the name leaves the
+    # live name 'a/b', and both reconcile and undo must still recognise the item
+    with open("plan-slash.jsonl", "w") as fh:
+        for op in [{"op": "mkdir", "dst": "SlashDir"},
+                   {"op": "move", "src": "a:b notes.txt", "dst": "SlashDir/a:b notes.txt"}]:
+            fh.write(json.dumps(op) + "\n")
+    sha_s = g.sha256_file("plan-slash.jsonl")
+    s_args = ["--backend", "drive", "--db", "d.sqlite", "--config", "cfg.json",
+              "--manifest", "plan-slash.jsonl", "--execute", "--confirm-sha", sha_s, "--pause", "0"]
+    before_s = copy.deepcopy(STATE)
+    TIMEOUT_AFTER_APPLY.add("SLASH")
+    rc = run("apply", s_args)
+    assert "TimeoutError" in str(rc), rc
+    sdir = [k for k, d in STATE.items() if d["name"] == "SlashDir"][0]
+    assert STATE["SLASH"]["parents"] == [sdir] and STATE["SLASH"]["name"] == "a/b notes.txt"
+    rc = run("apply", s_args + ["--retry-failed"])
+    assert rc == 0, rc  # reconciled as done, not 'unknown state'
+    rc = run("apply", s_args + ["--undo"])
+    assert rc == 0, rc
+    for k, d in before_s.items():
+        assert STATE[k]["parents"] == d["parents"] and STATE[k]["name"] == d["name"], k
+    print("'/' in a kept name OK: reconcile and undo match the live name")
+
+    # mkdir reconcile looks the folder up by name: a backslash and a quote in the name must be
+    # escaped in the query, or the lookup misses (and the retry makes a duplicate) or injects
+    odd = "back\\slash x\\' or name contains '"
+    with open("plan-odd.jsonl", "w") as fh:
+        fh.write(json.dumps({"op": "mkdir", "dst": odd}) + "\n")
+    sha_o = g.sha256_file("plan-odd.jsonl")
+    o_args = ["--backend", "drive", "--db", "d.sqlite", "--config", "cfg.json",
+              "--manifest", "plan-odd.jsonl", "--execute", "--confirm-sha", sha_o, "--pause", "0"]
+    CREATE_FAILS[odd] = TimeoutError("The read operation timed out")
+    rc = run("apply", o_args)
+    assert "TimeoutError" in str(rc), rc
+    rc = run("apply", o_args + ["--retry-failed"])
+    assert rc == 0, rc
+    made = [k for k, d in STATE.items() if d["name"] == odd]
+    assert len(made) == 1, made  # reconciled to the folder the timed-out create made
+    assert any(c[0] == "list" and "back\\\\slash x\\\\\\' or" in c[1] for c in CALLS), \
+        [c for c in CALLS if c[0] == "list"][-1]
+    rc = run("apply", o_args + ["--undo"])
+    assert rc == 0 and STATE[made[0]].get("trashed") is True, rc
+    print("mkdir reconcile escapes backslash and quote in the Drive query")
+
+    # Drive can commit a create and still answer 503: the create must not be retried (each
+    # retry would add a same-name folder); --retry-failed reconciles to the one folder
+    from googleapiclient.errors import HttpError
+    import httplib2
+    with open("plan-503.jsonl", "w") as fh:
+        fh.write(json.dumps({"op": "mkdir", "dst": "Created503"}) + "\n")
+    sha_5 = g.sha256_file("plan-503.jsonl")
+    f_args = ["--backend", "drive", "--db", "d.sqlite", "--config", "cfg.json",
+              "--manifest", "plan-503.jsonl", "--execute", "--confirm-sha", sha_5, "--pause", "0"]
+    CREATE_FAILS["Created503"] = HttpError(httplib2.Response({"status": 503}), b"{}")
+    rc = run("apply", f_args)
+    assert "503" in str(rc), rc
+    assert sum(d["name"] == "Created503" for d in STATE.values()) == 1
+    assert run("apply", f_args + ["--retry-failed"]) == 0
+    made = [k for k, d in STATE.items() if d["name"] == "Created503"]
+    assert len(made) == 1, made
+    assert run("apply", f_args + ["--undo"]) == 0 and STATE[made[0]].get("trashed") is True
+    print("a create that fails after committing is not retried; reconcile finds the one folder")
+    # a rate-limited create made nothing, so it is retried inside the same run
+    with open("plan-429.jsonl", "w") as fh:
+        fh.write(json.dumps({"op": "mkdir", "dst": "Created429"}) + "\n")
+    sha_r = g.sha256_file("plan-429.jsonl")
+    r_args = ["--backend", "drive", "--db", "d.sqlite", "--config", "cfg.json",
+              "--manifest", "plan-429.jsonl", "--execute", "--confirm-sha", sha_r, "--pause", "0"]
+    CREATE_REFUSES["Created429"] = HttpError(httplib2.Response({"status": 429}), b"{}")
+    real_sleep, gdrive.time.sleep = gdrive.time.sleep, lambda s: None
+    try:
+        assert run("apply", r_args) == 0
+    finally:
+        gdrive.time.sleep = real_sleep
+    made = [k for k, d in STATE.items() if d["name"] == "Created429"]
+    assert len(made) == 1 and not CREATE_REFUSES, made
+    assert run("apply", r_args + ["--undo"]) == 0 and STATE[made[0]].get("trashed") is True
+    print("a rate-limited create is retried in the same run and makes one folder")
+
+    # --batch 0 is refused up front; before, the first op ran and then n % 0 raised
+    with open("plan-b0.jsonl", "w") as fh:
+        fh.write(json.dumps({"op": "mkdir", "dst": "Batch0"}) + "\n")
+    sha_b = g.sha256_file("plan-b0.jsonl")
+    b_args = ["--backend", "drive", "--db", "d.sqlite", "--config", "cfg.json", "--manifest",
+              "plan-b0.jsonl", "--execute", "--confirm-sha", sha_b, "--pause", "0", "--batch", "0"]
+    for extra in ([], ["--undo"]):
+        with contextlib.redirect_stderr(io.StringIO()) as buf:
+            rc = run("apply", b_args + extra)
+        assert rc == 2 and "--batch must be >= 1" in buf.getvalue(), (rc, buf.getvalue())
+    assert not any(d["name"] == "Batch0" for d in STATE.values())
+    print("--batch 0 refused before any op runs")
+
+    # a crash mid-append can leave a torn last journal line: the next run drops it (the op it
+    # named is reconciled), and later records start on a clean line; a bad line elsewhere is
+    # refused
+    with open("plan-torn.jsonl", "w") as fh:
+        for d in ("Torn1", "Torn2"):
+            fh.write(json.dumps({"op": "mkdir", "dst": d}) + "\n")
+    sha_t = g.sha256_file("plan-torn.jsonl")
+    t2_args = ["--backend", "drive", "--db", "d.sqlite", "--config", "cfg.json", "--manifest",
+               "plan-torn.jsonl", "--execute", "--confirm-sha", sha_t, "--pause", "0"]
+    assert run("apply", t2_args + ["--max-ops", "1"]) == 0
+    jt = "plan-torn.jsonl.journal.jsonl"
+    good = open(jt).read()
+    with open(jt, "a") as fh:
+        fh.write('{"i": 1, "state": "inte')  # torn: no closing brace, no newline
+    with contextlib.redirect_stderr(io.StringIO()) as buf:
+        rc = run("apply", t2_args)
+    assert rc == 0 and "torn line" in buf.getvalue(), (rc, buf.getvalue())
+    recs = [json.loads(x) for x in open(jt)]  # every line parses again
+    assert [r["state"] for r in recs if r.get("i") == 1] == ["intent", "done"], recs
+    assert sum(d["name"] in ("Torn1", "Torn2") for d in STATE.values()) == 2
+    with open("torn-bad.jsonl", "w") as fh:
+        fh.write(good.splitlines()[0] + "\n{not json\n" + "\n".join(good.splitlines()[1:]) + "\n")
+    rc = run("apply", t2_args + ["--journal", "torn-bad.jsonl"])
+    assert "not valid JSON" in str(rc), rc
+    assert run("apply", t2_args + ["--undo"]) == 0
+    print("torn last journal line dropped and repaired; a bad middle line refused")
 
     # the journal is not covered by --confirm-sha: forged or foreign records must be refused
     with open("plan5.jsonl", "w") as fh:
@@ -302,7 +527,6 @@ def main():
 
     # The index is not covered by --confirm-sha either. An index edited between review and
     # execute must not redirect a reviewed op to another Drive folder or item.
-    import shutil
     STATE["OUTSIDE"] = {"name": "shared-with-outsiders", "mimeType": F, "parents": ["ROOT"]}
     STATE["GD2"] = {"name": "untitled document", "mimeType": "application/vnd.google-apps.document",
                     "parents": ["HL"], "modifiedTime": OLD}
@@ -412,6 +636,77 @@ def main():
     assert rc == 0 and STATE["PX2"].get("trashed") is False, rc
     print("trash OK: identical-only, one copy survives, live re-check, undo un-trashes")
 
+    # undo is write-ahead and reconciled like the forward path. (a) Drive applies a reverse
+    # move but the response times out: the undo must record it and carry on to older ops.
+    with open("plan-ut.jsonl", "w") as fh:
+        for op in [{"op": "mkdir", "dst": "UndoT"},
+                   {"op": "move", "src": "Scan_001.pdf", "src_key": "S1", "dst": "UndoT/s1u.pdf"}]:
+            fh.write(json.dumps(op) + "\n")
+    sha_u = g.sha256_file("plan-ut.jsonl")
+    u_args = ["--backend", "drive", "--db", "d.sqlite", "--config", "cfg.json",
+              "--manifest", "plan-ut.jsonl", "--execute", "--confirm-sha", sha_u, "--pause", "0"]
+    before_u = copy.deepcopy(STATE)
+    assert run("apply", u_args) == 0
+    undo_t = [k for k, d in STATE.items() if d["name"] == "UndoT"][0]
+    TIMEOUT_AFTER_APPLY.add("S1")
+    rc = run("apply", u_args + ["--undo"])
+    assert rc == 0, rc
+    for k, d in before_u.items():
+        assert STATE[k]["parents"] == d["parents"] and STATE[k]["name"] == d["name"], k
+    assert STATE[undo_t].get("trashed") is True
+    # (b) a crash after Drive un-trashed an item but before 'undone' was written leaves an
+    # undo-intent record; the rerun must reconcile it, not fail on 'no longer in the trash'
+    with open("trash-crash.jsonl", "w") as fh:
+        fh.write(json.dumps({"op": "trash", "src": px2, "src_key": "PX2", "keep_key": "PX1"}) + "\n")
+    sha_c = g.sha256_file("trash-crash.jsonl")
+    c_args = ["--backend", "drive", "--db", "d.sqlite", "--config", "cfg.json",
+              "--manifest", "trash-crash.jsonl", "--execute", "--confirm-sha", sha_c, "--pause", "0"]
+    assert run("apply", c_args) == 0 and STATE["PX2"]["trashed"] is True
+    STATE["PX2"]["trashed"] = False  # Drive applied the untrash, then the process died
+    with open("trash-crash.jsonl.journal.jsonl.undo.jsonl", "w") as fh:
+        fh.write(json.dumps({"i": 0, "state": "undo-intent"}) + "\n")
+    rc = run("apply", c_args + ["--undo"])
+    assert rc == 0, rc
+    last = [json.loads(x) for x in open("trash-crash.jsonl.journal.jsonl.undo.jsonl")][-1]
+    assert last["state"] == "undone" and last.get("reconciled"), last
+    # (c) an undo journal from before in_doubt existed: a failed record without the key is
+    # treated as in doubt and reconciled, not sent straight to undo (which would hit drift)
+    with open("trash-legacy.jsonl", "w") as fh:
+        fh.write(json.dumps({"op": "trash", "src": px2, "src_key": "PX2", "keep_key": "PX1"}) + "\n")
+    sha_l = g.sha256_file("trash-legacy.jsonl")
+    l_args = ["--backend", "drive", "--db", "d.sqlite", "--config", "cfg.json",
+              "--manifest", "trash-legacy.jsonl", "--execute", "--confirm-sha", sha_l, "--pause", "0"]
+    assert run("apply", l_args) == 0 and STATE["PX2"]["trashed"] is True
+    STATE["PX2"]["trashed"] = False  # the old run's untrash landed, then its response timed out
+    with open("trash-legacy.jsonl.journal.jsonl.undo.jsonl", "w") as fh:
+        fh.write(json.dumps({"i": 0, "state": "failed", "err": "TimeoutError()"}) + "\n")
+    rc = run("apply", l_args + ["--undo"])
+    assert rc == 0, rc
+    last = [json.loads(x) for x in open("trash-legacy.jsonl.journal.jsonl.undo.jsonl")][-1]
+    assert last["state"] == "undone" and last.get("reconciled"), last
+    # (d) a fault inside undo_reconcile halts, and the message names it
+    from gdrive_organizer import apply as apply_mod
+    with open("trash-fault.jsonl", "w") as fh:
+        fh.write(json.dumps({"op": "trash", "src": px2, "src_key": "PX2", "keep_key": "PX1"}) + "\n")
+    sha_f = g.sha256_file("trash-fault.jsonl")
+    t_args = ["--backend", "drive", "--db", "d.sqlite", "--config", "cfg.json",
+              "--manifest", "trash-fault.jsonl", "--execute", "--confirm-sha", sha_f, "--pause", "0"]
+    assert run("apply", t_args) == 0 and STATE["PX2"]["trashed"] is True
+    with open("trash-fault.jsonl.journal.jsonl.undo.jsonl", "w") as fh:
+        fh.write(json.dumps({"i": 0, "state": "undo-intent"}) + "\n")
+    real_ur = apply_mod.DriveBackend.undo_reconcile
+
+    def boom(self, *a):
+        raise KeyError("old_name")
+    apply_mod.DriveBackend.undo_reconcile = boom
+    try:
+        rc = run("apply", t_args + ["--undo"])
+    finally:
+        apply_mod.DriveBackend.undo_reconcile = real_ur
+    assert "unknown state (reconcile raised KeyError('old_name'))" in str(rc), rc
+    assert run("apply", t_args + ["--undo"]) == 0 and STATE["PX2"]["trashed"] is False
+    print("undo is write-ahead: a timed-out or crashed undo is reconciled, not stuck")
+
     # empty folders: innermost first, nothing but folders below, checked live, undo un-trashes
     empty_ops = [{"op": "trash", "src": "old-empty/nothing-here", "src_key": "ESUB"},
                  {"op": "trash", "src": "old-empty", "src_key": "EMPTY"}]
@@ -465,6 +760,7 @@ def main():
     only = [k for k, in db2.execute("select key from snippets")]
     assert only == ["GD"], only
     print("peek --only-keys OK")
+    check_transport_retry()
     print("ALL DRIVE MOCK TESTS PASSED")
 
 

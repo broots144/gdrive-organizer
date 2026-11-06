@@ -38,6 +38,7 @@ def main(argv=None) -> int:
     cfg = g.load_config(a.config)
     guard = g.Guard(cfg)
     db = g.open_db(a.db)
+    g.require_complete(db)
 
     def show(path: str) -> str:
         return "[sensitive-looking name, see quarantine file]" if guard.is_sensitive_path(path) else path

@@ -14,6 +14,7 @@ un-trashes it. Drive empties its trash after 30 days.
 Honest semantics: there is no cross-item atomicity. Each op is individually atomic (local
 rename(2), or one Drive files.update), and the journal is write-ahead (intent, fsync, act, done,
 fsync), so a crash leaves at most one op in doubt, which the next run reconciles by inspection.
+Undo is journaled the same way (undo-intent, act, undone) and reconciled the same way.
 
 Backends:
   drive  (recommended) server-side files.update(addParents/removeParents/name). Keyed by Drive ID,
@@ -43,16 +44,48 @@ PROG = "gdrive-organizer apply"
 class Journal:
     def __init__(self, path: str):
         self.path = path
+        self._cut = None        # byte offset of a torn last line, dropped before the next append
+        self._newline = False   # the last record is whole but unterminated
 
     def read(self):
+        """Records in order. A crash or full disk mid-append can leave a partial last line with
+        no newline after it: that can only be a torn intent or done, whose op the reconcile path
+        already handles, so it is dropped with a warning. A bad line anywhere else is refused."""
+        self._cut, self._newline = None, False
         if not os.path.exists(self.path):
             return []
-        with open(self.path, "r", encoding="utf-8") as fh:
-            return [json.loads(x) for x in fh if x.strip()]
+        with open(self.path, "rb") as fh:
+            data = fh.read()
+        lines = data.split(b"\n")
+        recs, off = [], 0
+        for n, raw in enumerate(lines):
+            last = n == len(lines) - 1  # only an unterminated line can be last here
+            if raw.strip():
+                try:
+                    recs.append(json.loads(raw.decode("utf-8")))
+                except ValueError:
+                    if not last:
+                        raise SystemExit(f"journal {self.path} line {n + 1} is not valid JSON; "
+                                         "refusing to use it")
+                    g.eprint(f"WARNING: journal {self.path} ends in a torn line (a crash during "
+                             "a write); ignoring it, and its op is reconciled")
+                    self._cut = off
+                    break
+                if last:
+                    self._newline = True
+            off += len(raw) + 1
+        return recs
 
     def append(self, rec: dict) -> None:
         rec = dict(rec, ts=time.time())
+        if self._cut is not None:
+            with open(self.path, "r+b") as fh:
+                fh.truncate(self._cut)
+            self._cut = None
         with open(self.path, "a", encoding="utf-8") as fh:
+            if self._newline:
+                fh.write("\n")
+                self._newline = False
             fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
             fh.flush()
             os.fsync(fh.fileno())
@@ -161,6 +194,22 @@ class FsBackend:
     def adopt_created(self, rec):
         pass
 
+    def undo_reconcile(self, rec, op=None):
+        """An undo without an 'undone' record (crash, or an error after acting): decide from
+        the filesystem whether the reverse already holds. 'undone' writes nothing; 'redo' goes
+        through undo() and all of its checks again."""
+        if rec["op"] == "mkdir":
+            return "redo" if os.path.isdir(self.ab(rec["dst"])) else "undone"
+        if not rec.get("src_raw"):
+            return "halt"
+        src_ok = os.path.lexists(self.ab(rec["src_raw"]))
+        dst_ok = os.path.lexists(self.ab(rec["dst"]))
+        if src_ok and not dst_ok:
+            return "undone"
+        if dst_ok and not src_ok:
+            return "redo"
+        return "halt"
+
     def undo(self, rec, op=None):
         if rec["op"] == "mkdir":
             os.rmdir(self.ab(rec["dst"]))  # only succeeds if empty
@@ -173,6 +222,16 @@ class FsBackend:
 
 
 # ------------------------------------------------------------------ drive backend
+
+def drive_q_str(s):
+    """Escape a value for a single-quoted Drive query literal: backslash first, then quote."""
+    return s.replace("\\", "\\\\").replace("'", "\\'")
+
+
+def shown(name):
+    """A live Drive name in the form the index and manifest use: NFC, '/' shown as ':'."""
+    return g.nfc((name or "").replace("/", ":"))
+
 
 class DriveBackend:
     def __init__(self, db, guard, client_secret, token):
@@ -250,8 +309,13 @@ class DriveBackend:
     def mkdir(self, e):
         pid = self.folder_id(g.parent_of(e["dst"]))
         name = e["dst"].rsplit("/", 1)[-1]
+        # Rate limits only: Drive can commit a create and still answer 5xx or time out, and a
+        # retry would make a second folder of the same name. A 429 or 403 rateLimitExceeded
+        # means nothing was created, so those are retried. Any other failure is journaled, and
+        # --retry-failed reconciles by looking the folder up before creating it again.
         f = self.gd.call(self.svc.files().create(
-            body={"name": name, "mimeType": g.FOLDER_MIME, "parents": [pid]}, fields="id"))
+            body={"name": name, "mimeType": g.FOLDER_MIME, "parents": [pid]}, fields="id"),
+            rate_limit_only=True)
         self.created[g.pkey(e["dst"])] = f["id"]
         return {"new_id": f["id"], "parent": pid}
 
@@ -278,7 +342,7 @@ class DriveBackend:
         if res.get("parents") != [new_pid]:
             raise RuntimeError("post-check: parents not as expected")
         return {"old_parent": old_pid, "new_parent": new_pid,
-                "old_name": cur["name"], "new_name": res["name"]}
+                "old_name": cur["name"], "new_name": shown(res["name"])}
 
     def trash(self, e):
         """Move one exact duplicate, or one empty folder, to Drive's trash after live checks."""
@@ -317,7 +381,7 @@ class DriveBackend:
         whether it happened. Returns (verdict, undo info for a done record)."""
         if e["op"] == "mkdir":
             pid = self.folder_id(g.parent_of(e["dst"]))
-            name = e["dst"].rsplit("/", 1)[-1].replace("'", "\\'")
+            name = drive_q_str(e["dst"].rsplit("/", 1)[-1])
             r = self.gd.call(self.svc.files().list(
                 q=f"'{pid}' in parents and name = '{name}' and mimeType = '{g.FOLDER_MIME}' "
                   "and trashed = false", fields="files(id)", pageSize=10))
@@ -335,15 +399,45 @@ class DriveBackend:
         cur = self.gd.call(self.svc.files().get(fileId=e["src_key"], fields="name,parents"))
         new_pid = self.folder_id(g.parent_of(e["dst"]))
         new_name = e["dst"].rsplit("/", 1)[-1]
-        if cur.get("parents") == [new_pid] and cur["name"] == new_name:
+        # a kept name with '/' stays 'a/b' in Drive while the plan says 'a:b'
+        if cur.get("parents") == [new_pid] and shown(cur["name"]) == new_name:
             # Unrenamed: the current name is the original. Renamed: the index name is the best
             # record of it (a '/' in the original shows as ':' there).
             old_name = cur["name"] if new_name == e["expect"]["name"] else e["expect"]["name"]
             return "done", {"old_parent": e["src_parent_key"], "new_parent": new_pid,
-                            "old_name": old_name, "new_name": cur["name"]}
+                            "old_name": old_name, "new_name": shown(cur["name"])}
         if cur.get("parents") == [e["src_parent_key"]]:
             return "redo", {}
         return "halt", {}
+
+    def undo_reconcile(self, rec, e=None, op=None):
+        """An undo without an 'undone' record (crash, or a timeout after Drive applied it):
+        decide from Drive whether the reverse already holds. 'undone' writes nothing; 'redo'
+        goes through undo() and all of its checks again; 'halt' needs a person."""
+        for fid in (rec.get("src_key"), rec.get("new_id"), rec.get("old_parent"),
+                    rec.get("new_parent")):
+            if self.guard.is_protected_id(fid):
+                return "halt"
+        if rec["op"] == "trash":
+            cur = self.gd.call(self.svc.files().get(fileId=rec["src_key"],
+                                                    fields="id,parents,trashed"))
+            return "redo" if cur.get("trashed") else "undone"
+        if rec["op"] == "mkdir":
+            if not rec.get("new_id"):
+                return "halt"
+            cur = self.gd.call(self.svc.files().get(fileId=rec["new_id"], fields="id,trashed"))
+            return "undone" if cur.get("trashed") else "redo"
+        cur = self.gd.call(self.svc.files().get(fileId=rec["src_key"],
+                                                fields="id,name,parents,trashed"))
+        if cur.get("trashed"):
+            return "halt"
+        name = shown(cur.get("name"))
+        if cur.get("parents") == [rec.get("old_parent")] and name == shown(rec.get("old_name")):
+            return "undone"
+        if cur.get("parents") == [rec.get("new_parent")] and \
+                name == rec["dst"].rsplit("/", 1)[-1]:
+            return "redo"
+        return "halt"
 
     def undo(self, rec, e=None, op=None):
         """Reverse one journal record, only if Drive still shows exactly what the record says
@@ -395,7 +489,7 @@ class DriveBackend:
         cur = self.gd.call(self.svc.files().get(fileId=rec["src_key"],
                                                 fields="id,name,parents,trashed"))
         if cur.get("trashed") or cur.get("parents") != [rec["new_parent"]] or \
-                cur.get("name") != new_name:
+                shown(cur.get("name")) != new_name:
             raise RuntimeError("drift: item is not where this run put it")
         kw = {"fileId": rec["src_key"], "fields": "id"}
         if rec["new_parent"] != rec["old_parent"]:
@@ -425,9 +519,12 @@ def main(argv=None) -> int:
     ap.add_argument("--undo", action="store_true")
     ap.add_argument("--retry-failed", action="store_true")
     a = ap.parse_args(argv)
+    if a.batch < 1:
+        ap.error("--batch must be >= 1 (ops between pauses; use --pause 0 for no pause)")
 
     cfg = g.load_config(a.config)
     db = g.open_db(a.db)
+    g.require_complete(db)
     if g.get_meta(db, "backend") != a.backend:
         raise SystemExit("index backend does not match --backend")
     sha = g.sha256_file(a.manifest)
@@ -488,7 +585,11 @@ def main(argv=None) -> int:
         if prev and prev["state"] in ("intent", "failed"):
             # A failed op may still have happened (e.g. a timeout after Drive applied it), so
             # check reality before acting again.
-            verdict, extra = be.reconcile(e, prev)
+            try:
+                verdict, extra = be.reconcile(e, prev)
+            except Exception as ex:
+                raise SystemExit(f"op {e['i']} (manifest line {e['line']}) could not be "
+                                 f"reconciled: {ex!r}. Inspect by hand; journal: {jpath}")
             if verdict == "done":
                 journal.append(dict({"i": e["i"], "state": "done", "op": e["op"], "dst": e["dst"],
                                      "src": e.get("src"), "src_key": e.get("src_key"),
@@ -522,30 +623,66 @@ def main(argv=None) -> int:
 
 
 def run_undo(be, checked, jpath, a, plan, ops):
-    """`checked` is the journal as check_journal accepted it; it is not read again."""
+    """`checked` is the journal as check_journal accepted it; it is not read again.
+
+    Write-ahead like the forward path: undo-intent, act, undone. An undo left at undo-intent
+    (crash), or failed with an error that may have come after Drive acted (a timeout, not one
+    of our own refusals), is reconciled against live state before it is tried again."""
     upath = jpath + ".undo.jsonl"
     uj = Journal(upath)
-    undone = {r["i"] for r in uj.read() if r.get("state") == "undone"}
+    ustate = last_state(r for r in uj.read() if isinstance(r.get("i"), int))
+    undone = {i for i, r in ustate.items() if r.get("state") == "undone"}
     recs = [r for r in checked if r.get("state") == "done"]
     by_i = {e["i"]: e for e in plan}
-    if isinstance(be, DriveBackend):
+    drive = isinstance(be, DriveBackend)
+    if drive:
         # created folders resolve destination parents; each is verified again before its undo
         for r in recs:
             if r["op"] == "mkdir" and r.get("new_id") and r["i"] not in undone:
                 be.created[g.pkey(r["dst"])] = r["new_id"]
+
+    def reconcile(args):
+        """Returns (verdict, why). A fault in the reconcile itself halts too, but says so."""
+        try:
+            return be.undo_reconcile(*args), ""
+        except Exception as ex:
+            return "halt", f" (reconcile raised {ex!r})"
+
     n = 0
     for rec in reversed(recs):
-        if rec["i"] in undone:
+        i = rec["i"]
+        if i in undone:
             continue
+        args = (rec, by_i.get(i), ops[i]) if drive else (rec, ops[i])
+        prev = ustate.get(i) or {}
+        # a failed record with no in_doubt key predates that field: treat it as in doubt
+        if prev.get("state") == "undo-intent" or (prev.get("state") == "failed"
+                                                   and prev.get("in_doubt", True)):
+            verdict, why = reconcile(args)
+            if verdict == "halt":
+                raise SystemExit(f"undo of op {i} is in an unknown state{why}; inspect by "
+                                 f"hand. Undo journal: {upath}")
+            if verdict == "undone":
+                uj.append({"i": i, "state": "undone", "reconciled": True})
+                print(f"undo of op {i}: already applied; recorded as undone", flush=True)
+                n += 1
+                continue
+        uj.append({"i": i, "state": "undo-intent"})
         try:
-            if isinstance(be, DriveBackend):
-                be.undo(rec, by_i.get(rec["i"]), ops[rec["i"]])
-            else:
-                be.undo(rec, ops[rec["i"]])
+            be.undo(*args)
         except Exception as ex:
-            uj.append({"i": rec["i"], "state": "failed", "err": repr(ex)})
-            raise SystemExit(f"undo of op {rec['i']} failed: {ex!r}. Undo journal: {upath}")
-        uj.append({"i": rec["i"], "state": "undone"})
+            # RuntimeError is one of our own checks refusing before acting; anything else (a
+            # timeout, a reset connection) may have come after Drive applied the change
+            in_doubt = not isinstance(ex, RuntimeError)
+            if in_doubt and reconcile(args)[0] == "undone":
+                uj.append({"i": i, "state": "undone", "reconciled": True})
+                print(f"undo of op {i}: {ex!r}, but it was applied; recorded as undone",
+                      flush=True)
+                n += 1
+                continue
+            uj.append({"i": i, "state": "failed", "err": repr(ex), "in_doubt": in_doubt})
+            raise SystemExit(f"undo of op {i} failed: {ex!r}. Undo journal: {upath}")
+        uj.append({"i": i, "state": "undone"})
         n += 1
         if n % a.batch == 0:
             time.sleep(a.pause)

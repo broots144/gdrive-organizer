@@ -259,6 +259,15 @@ def get_meta(db: sqlite3.Connection, k: str, default=None):
     return json.loads(r[0]) if r else default
 
 
+def require_complete(db: sqlite3.Connection) -> None:
+    """Refuse an index whose run never finished (crash, network error, Ctrl-C). Rows are
+    committed as the walk goes, but atomic units, sensitive names and the 'finished' marker
+    are written only at the end, so a partial index has neither and covers part of the tree."""
+    if get_meta(db, "finished") is None:
+        raise SystemExit("index is incomplete (no finished marker; the index run did not "
+                         "complete). Move it aside and re-index.")
+
+
 def load_protected(db: sqlite3.Connection, guard: Guard) -> None:
     guard.protected_pks = [r[0] for r in db.execute("SELECT pathkey FROM protected")]
 
