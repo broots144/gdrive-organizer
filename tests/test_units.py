@@ -249,7 +249,7 @@ def drive_service_oauth_plumbing():
     import google_auth_oauthlib.flow as gflow
     import googleapiclient.discovery as gdisc
     saved = (gtr.Request, goc.Credentials, gflow.InstalledAppFlow, gdisc.build)
-    log = {"flows": 0, "stored": None, "built": []}
+    log = {"flows": 0, "stored": None, "built": [], "modes": []}
 
     class Creds:
         @staticmethod
@@ -266,49 +266,75 @@ def drive_service_oauth_plumbing():
         def run_local_server(self, port):
             assert port == 0
             log["flows"] += 1
-            return FakeCreds(payload="fresh")
+            return WatchedCreds(payload="fresh")
+
+    class WatchedCreds(FakeCreds):
+        def to_json(self):
+            # serialized while the token file is already open: record its mode at that moment,
+            # so a create-then-chmod window shows up even though the final mode is 0600
+            if log.get("tok") and os.path.exists(log["tok"]):
+                log["modes"].append(os.stat(log["tok"]).st_mode & 0o777)
+            return super().to_json()
 
     def build(api, ver, credentials, cache_discovery):
         log["built"].append((api, ver, credentials, cache_discovery))
         return "SVC"
 
+    # The fakes only apply while service() imports the Google classes inside the function; a
+    # module-level import would bypass them and start a real browser sign-in.
+    for name in ("Request", "Credentials", "InstalledAppFlow", "build"):
+        assert not hasattr(gdrive, name), f"drive_api imports {name} at module level"
     gtr.Request, goc.Credentials = (lambda: "REQ"), Creds
     gflow.InstalledAppFlow, gdisc.build = Flow, build
     d = tmpdir()
+    cs = os.path.join(d, "cs.json")  # never created; only the fake flow sees it
+    cwd, mask = os.getcwd(), os.umask(0)
     try:
-        # no token path: signs in, keeps the token in memory, writes nothing
-        assert gdrive.service("write", "cs.json", None) == "SVC"
+        # no token path: signs in, keeps the token in memory, writes nothing (cwd is the temp
+        # dir, so a stray relative write would land here and be caught)
+        os.chdir(d)
+        assert gdrive.service("write", cs, None) == "SVC"
         assert log["flows"] == 1 and log["flow_scopes"] == [gdrive.SCOPES["write"]]
         assert os.listdir(d) == []
-        # token path that does not exist yet: signs in and writes it, 0600, in a new folder
-        tok = os.path.join(d, "nested", "token_meta.json")
-        gdrive.service("meta", "cs.json", tok)
+        os.chdir(cwd)
+        # token path that does not exist yet: signs in and writes it in a new folder, 0600
+        # from creation even with umask 0
+        tok = log["tok"] = os.path.join(d, "nested", "token_meta.json")
+        gdrive.service("meta", cs, tok)
         assert log["flows"] == 2 and json.load(open(tok)) == {"fake": "fresh"}
         assert os.stat(tok).st_mode & 0o777 == 0o600, oct(os.stat(tok).st_mode)
+        # an existing, too-open token file is tightened when it is rewritten
+        os.chmod(tok, 0o644)
+        gdrive.service("meta", cs, tok)
+        assert log["flows"] == 3 and os.stat(tok).st_mode & 0o777 == 0o600
+        assert log["modes"] == [0o600, 0o600], [oct(m) for m in log["modes"]]
         # a valid stored token: no sign-in, no rewrite
         log["stored"] = FakeCreds(valid=True)
         os.chmod(tok, 0o600)
         before = os.stat(tok).st_mtime_ns
-        gdrive.service("meta", "cs.json", tok)
-        assert log["flows"] == 2 and os.stat(tok).st_mtime_ns == before
+        gdrive.service("meta", cs, tok)
+        assert log["flows"] == 3 and os.stat(tok).st_mtime_ns == before
         assert log["loaded"] == (tok, [gdrive.SCOPES["meta"]])
         # expired with a refresh token: refreshed in place, no sign-in
         log["stored"] = FakeCreds(valid=False, expired=True)
-        gdrive.service("meta", "cs.json", tok)
-        assert log["stored"].refreshed == 1 and log["flows"] == 2
+        gdrive.service("meta", cs, tok)
+        assert log["stored"].refreshed == 1 and log["flows"] == 3
         # refresh fails (invalid_grant after 7 days in Testing): sign in again, rewrite token
         log["stored"] = FakeCreds(valid=False, expired=True, refresh_raises=ValueError("grant"))
         with quiet() as (out, _):
-            gdrive.service("meta", "cs.json", tok)
+            gdrive.service("meta", cs, tok)
         assert "could not be refreshed (ValueError)" in out.getvalue()
         assert "grant" not in out.getvalue()  # the exception text is not echoed
-        assert log["flows"] == 3 and json.load(open(tok)) == {"fake": "fresh"}
+        assert log["flows"] == 4 and json.load(open(tok)) == {"fake": "fresh"}
+        assert set(log["modes"]) == {0o600}
         # invalid and not refreshable (no refresh token): sign in
         log["stored"] = FakeCreds(valid=False, expired=True, refresh_token=None)
-        gdrive.service("meta", "cs.json", tok)
-        assert log["flows"] == 4 and log["stored"].refreshed == 0
+        gdrive.service("meta", cs, tok)
+        assert log["flows"] == 5 and log["stored"].refreshed == 0
         assert all(b[3] is False for b in log["built"])
     finally:
+        os.chdir(cwd)
+        os.umask(mask)
         gtr.Request, goc.Credentials, gflow.InstalledAppFlow, gdisc.build = saved
         shutil.rmtree(d)
     print("drive_api.service: memory-only token, 0600 token file, reuse, refresh, re-sign-in")
@@ -929,7 +955,16 @@ def drive_backend_trash_and_undo_checks():
     raises(RuntimeError, be.trash, de, match="already trashed")
     st["D"]["trashed"] = False
     assert be.trash(de) == {"trashed": True}
-    # nothing protected is ever fetched or updated
+    # a trash or move naming a protected id (src, its parent or the copy to keep) is refused
+    # before any Drive call reaches that id
+    for bad in (dict(fe, src_key="PROTID"), dict(fe, keep_key="PROTID"),
+                dict(fe, src_parent_key="PROTID"), dict(de, src_key="PROTID")):
+        raises(RuntimeError, be.trash, bad, match="protected id")
+    mv = {"op": "move", "src": "A/f1.txt", "src_key": "PROTID", "src_parent_key": "A",
+          "dst": "D/f1.txt", "expect": {"name": "f1.txt"}}
+    raises(RuntimeError, be.move, mv, match="protected id")
+    raises(RuntimeError, be.move, dict(mv, src_key="f1", src_parent_key="PROTID"),
+           match="protected id")
     assert not [c for c in be.svc.f.calls if c[1] == "PROTID"]
     shutil.rmtree(d)
     print("drive backend trash: trashed/parent/md5/keep/path drift, non-empty folder, undo checks")

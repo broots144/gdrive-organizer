@@ -2,6 +2,7 @@
 
 One line per lesson, newest first.
 
+- 2026-11-06: the token was written with `open()` then `chmod 0600`, and a test that checked only the final mode called it 0600; rule: create secret files with `os.open(..., 0o600)` and test the mode at the moment the secret is written.
 - 2026-11-06: forward apply was write-ahead and reconciled but undo was not, and files.create was retried blind on 5xx; rule: every Drive write is journaled before it is sent, sent once, and reconciled from live state after a crash or timeout, in both directions.
 - 2026-11-06: status lived only in CHANGELOG and commit messages, so a new session had to rebuild it from git; rule: STATE.md is the one current truth and CI fails code PRs that skip it (D-013).
 - 2026-11-01: Dependabot update-type groups skip range-style requirements (`>=x`), giving one PR per package (#30); rule: one pattern group for pip ranges.

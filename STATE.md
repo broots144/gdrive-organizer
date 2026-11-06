@@ -1,6 +1,6 @@
 # Current Build State
 
-Last updated: 2026-11-06 by Claude Code: `tests/test_units.py` (tests/coverage-2026-11-06c) raises statement coverage of the package from 82% to 93% (estimate: coverage.py 7.17, all test files plus the demo, subprocesses included); no new bugs found.
+Last updated: 2026-11-06 by Claude Code: `tests/test_units.py` (tests/coverage-2026-11-06c) raises statement coverage of the package from 82% to 93% (estimate: coverage.py 7.17, all test files plus the demo, subprocesses included). Review fixes: the OAuth token file is now created 0600 by `os.open` (before, `open()` then `chmod` left it umask-readable for a moment), and the Drive backend refuses a move or trash naming a protected id before any Drive call.
 
 ## Phases
 
@@ -41,6 +41,10 @@ Last updated: 2026-11-06 by Claude Code: `tests/test_units.py` (tests/coverage-2
   command that reads an index refuses one without the `finished` marker (`core.require_complete`).
   Each has a regression test in `tests/test_drive_mock.py`, `test_fs_local.py` or
   `test_rules_to_plan.py`.
+- Token files (`--token`) are created 0600 with `os.open` and an existing one is `fchmod` 0600
+  before the token is written, so no other local user can read it at any point;
+  `DriveBackend.move` and `.trash` refuse a protected src, src parent or keep id before any
+  Drive call (defense in depth behind `validate`). Both in `tests/test_units.py`.
 
 ### Verify output (2026-11-06, macOS, Python 3.15, `just check` with the worktree venv, after test_units.py)
 

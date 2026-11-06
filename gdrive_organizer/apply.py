@@ -319,8 +319,15 @@ class DriveBackend:
         self.created[g.pkey(e["dst"])] = f["id"]
         return {"new_id": f["id"], "parent": pid}
 
+    def _refuse_protected(self, *ids):
+        """validate and the path guard already refuse protected ground; this keeps a protected
+        ID from reaching any Drive call even if a manifest got past them."""
+        if any(self.guard.is_protected_id(i) for i in ids):
+            raise RuntimeError("op names a protected id")
+
     def move(self, e):
         fid = e["src_key"]
+        self._refuse_protected(fid, e.get("src_parent_key"))
         cur = self.gd.call(self.svc.files().get(fileId=fid, fields="id,name,parents,trashed"))
         if cur.get("trashed"):
             raise RuntimeError("drift: src is trashed")
@@ -347,6 +354,7 @@ class DriveBackend:
     def trash(self, e):
         """Move one exact duplicate, or one empty folder, to Drive's trash after live checks."""
         fid = e["src_key"]
+        self._refuse_protected(fid, e.get("src_parent_key"), e.get("keep_key"))
         if e["kind"] == "dir":
             cur = self.gd.call(self.svc.files().get(fileId=fid, fields="id,parents,trashed"))
             if cur.get("trashed"):
