@@ -403,6 +403,33 @@ def main():
     assert not any(d["name"] == "Batch0" for d in STATE.values())
     print("--batch 0 refused before any op runs")
 
+    # a crash mid-append can leave a torn last journal line: the next run drops it (the op it
+    # named is reconciled), and later records start on a clean line; a bad line elsewhere is
+    # refused
+    with open("plan-torn.jsonl", "w") as fh:
+        for d in ("Torn1", "Torn2"):
+            fh.write(json.dumps({"op": "mkdir", "dst": d}) + "\n")
+    sha_t = g.sha256_file("plan-torn.jsonl")
+    t2_args = ["--backend", "drive", "--db", "d.sqlite", "--config", "cfg.json", "--manifest",
+               "plan-torn.jsonl", "--execute", "--confirm-sha", sha_t, "--pause", "0"]
+    assert run("apply", t2_args + ["--max-ops", "1"]) == 0
+    jt = "plan-torn.jsonl.journal.jsonl"
+    good = open(jt).read()
+    with open(jt, "a") as fh:
+        fh.write('{"i": 1, "state": "inte')  # torn: no closing brace, no newline
+    with contextlib.redirect_stderr(io.StringIO()) as buf:
+        rc = run("apply", t2_args)
+    assert rc == 0 and "torn line" in buf.getvalue(), (rc, buf.getvalue())
+    recs = [json.loads(x) for x in open(jt)]  # every line parses again
+    assert [r["state"] for r in recs if r.get("i") == 1] == ["intent", "done"], recs
+    assert sum(d["name"] in ("Torn1", "Torn2") for d in STATE.values()) == 2
+    with open("torn-bad.jsonl", "w") as fh:
+        fh.write(good.splitlines()[0] + "\n{not json\n" + "\n".join(good.splitlines()[1:]) + "\n")
+    rc = run("apply", t2_args + ["--journal", "torn-bad.jsonl"])
+    assert "not valid JSON" in str(rc), rc
+    assert run("apply", t2_args + ["--undo"]) == 0
+    print("torn last journal line dropped and repaired; a bad middle line refused")
+
     # the journal is not covered by --confirm-sha: forged or foreign records must be refused
     with open("plan5.jsonl", "w") as fh:
         for op in [{"op": "mkdir", "dst": "Archive3"},

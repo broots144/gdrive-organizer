@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- `apply` drops a torn last journal line (a crash or full disk mid-write) with a warning and
+  truncates it before the next record, instead of dying with JSONDecodeError on every later run.
+  A malformed line anywhere else is refused with its line number.
+
 - `validate`, `apply`, `plan`, `report`, `peek`, `dedupe` and `empty-dirs` refuse an index with no
   `finished` marker. An index run that died partway left committed rows with no atomic or
   sensitive marks, so `peek` could read sensitive-named files and `plan` or `validate` could

@@ -44,16 +44,48 @@ PROG = "gdrive-organizer apply"
 class Journal:
     def __init__(self, path: str):
         self.path = path
+        self._cut = None        # byte offset of a torn last line, dropped before the next append
+        self._newline = False   # the last record is whole but unterminated
 
     def read(self):
+        """Records in order. A crash or full disk mid-append can leave a partial last line with
+        no newline after it: that can only be a torn intent or done, whose op the reconcile path
+        already handles, so it is dropped with a warning. A bad line anywhere else is refused."""
+        self._cut, self._newline = None, False
         if not os.path.exists(self.path):
             return []
-        with open(self.path, "r", encoding="utf-8") as fh:
-            return [json.loads(x) for x in fh if x.strip()]
+        with open(self.path, "rb") as fh:
+            data = fh.read()
+        lines = data.split(b"\n")
+        recs, off = [], 0
+        for n, raw in enumerate(lines):
+            last = n == len(lines) - 1  # only an unterminated line can be last here
+            if raw.strip():
+                try:
+                    recs.append(json.loads(raw.decode("utf-8")))
+                except ValueError:
+                    if not last:
+                        raise SystemExit(f"journal {self.path} line {n + 1} is not valid JSON; "
+                                         "refusing to use it")
+                    g.eprint(f"WARNING: journal {self.path} ends in a torn line (a crash during "
+                             "a write); ignoring it, and its op is reconciled")
+                    self._cut = off
+                    break
+                if last:
+                    self._newline = True
+            off += len(raw) + 1
+        return recs
 
     def append(self, rec: dict) -> None:
         rec = dict(rec, ts=time.time())
+        if self._cut is not None:
+            with open(self.path, "r+b") as fh:
+                fh.truncate(self._cut)
+            self._cut = None
         with open(self.path, "a", encoding="utf-8") as fh:
+            if self._newline:
+                fh.write("\n")
+                self._newline = False
             fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
             fh.flush()
             os.fsync(fh.fileno())
