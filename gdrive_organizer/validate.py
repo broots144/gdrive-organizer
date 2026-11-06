@@ -21,7 +21,8 @@ Rules enforced (errors block execution):
   * nothing touches protected ground: the folder, anything inside it, any ANCESTOR of it
     (moving or renaming an ancestor moves the folder), any protected-looking name in dst
   * every src resolves to exactly one indexed item (Drive allows duplicate names; pass src_key)
-  * sources are disjoint subtrees; no op reaches inside something moved earlier
+  * sources are disjoint subtrees; no item is the source of two ops; no op reaches inside
+    something moved earlier
   * dst parent exists (indexed dir or earlier mkdir); dst does not exist (case and Unicode
     insensitive); dst not inside src; no dot-folder destinations
   * items inside an atomic unit (git repo, compose project, bundle, node_modules...) move
@@ -113,6 +114,7 @@ def validate(db, cfg, ops):
             else:
                 nondir[a] += 1
     trashed_so_far = set()
+    seen_src = set()  # item keys already named as a source: each item is acted on at most once
 
     for i, op in enumerate(ops):
         tag = f"line {op['_line']}"
@@ -129,6 +131,10 @@ def validate(db, cfg, ops):
             entry = validate_trash(op, err, by_key, by_pk, guard, recent, over, trashed_keys,
                                    src_pks, move_pks, trash_dir_pks, nondir, subdirs,
                                    trashed_so_far)
+            if entry is not None:
+                if entry["src_key"] in seen_src:
+                    err("src is already a source of an earlier op")
+                seen_src.add(entry["src_key"])
             if entry is not None and len(errors) == e0:
                 trashed_so_far.add(entry["src_key"])
                 entry.update(i=i, op="trash", line=op["_line"], dst="")
@@ -195,6 +201,9 @@ def validate(db, cfg, ops):
                     err("src lies inside another moved source (make sources disjoint)")
                     break
             if item is not None:
+                if item["key"] in seen_src:
+                    err("src is already a source of an earlier op")
+                seen_src.add(item["key"])
                 if item["kind"] == "dot":
                     err("src is a dot entry")
                 if item["under_atomic"] and not item["atomic_root"]:

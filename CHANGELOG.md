@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- `validate` refuses an item named as the source of two ops (move and move, move and trash).
+  Before, both passed and `apply` failed partway, after the first op had run.
+
 - Repo-state files: STATE.md, ROADMAP.md, LESSONS.md, docs/DECISIONS.md, docs/plans/, and a
   justfile with `check` and per-phase verify targets. A `state-guard` CI job fails a PR that
   changes code without STATE.md (`chore:`/`deps:` titles exempt). The sandbox denies writes to

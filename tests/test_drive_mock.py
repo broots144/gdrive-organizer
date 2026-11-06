@@ -196,6 +196,27 @@ def main():
                    "resolves to 0 items"):
         assert needle in joined, (needle, joined)
     print("validator negative cases OK")
+    # one item may be the source of at most one op (move+move, move+trash, trash+move);
+    # two different items that share a name (S1, S2) stay separately movable
+    px2 = "homelab/proxmox-2021/vzdump-100 copy.tar.gz"
+    for name, ops in (
+            ("twice-move", [{"op": "move", "src": "Scan_001.pdf", "src_key": "S1", "dst": "a.pdf"},
+                            {"op": "move", "src": "Scan_001.pdf", "src_key": "S1", "dst": "b.pdf"}]),
+            ("move-trash", [{"op": "move", "src": px2, "src_key": "PX2", "dst": "c.tar.gz"},
+                            {"op": "trash", "src": px2, "src_key": "PX2", "keep_key": "PX1"}]),
+            ("trash-move", [{"op": "trash", "src": px2, "src_key": "PX2", "keep_key": "PX1"},
+                            {"op": "move", "src": px2, "src_key": "PX2", "dst": "c.tar.gz"}])):
+        with open(name + ".jsonl", "w") as fh:
+            fh.write("".join(json.dumps(op) + "\n" for op in ops))
+        errs, _, _ = validate.validate(g.open_db("d.sqlite"), cfg,
+                                       validate.load_manifest(name + ".jsonl"))
+        assert any("already a source of an earlier op" in e for e in errs), (name, errs)
+    with open("pair.jsonl", "w") as fh:
+        for k, d in (("S1", "a.pdf"), ("S2", "b.pdf")):
+            fh.write(json.dumps({"op": "move", "src": "Scan_001.pdf", "src_key": k, "dst": d}) + "\n")
+    errs, _, _ = validate.validate(g.open_db("d.sqlite"), cfg, validate.load_manifest("pair.jsonl"))
+    assert not errs, errs
+    print("validator refuses an item named as the source of two ops")
     errs, warns, plan = validate.validate(g.open_db("d.sqlite"), cfg,
                                          validate.load_manifest("plan.jsonl"))
     assert not errs, errs
