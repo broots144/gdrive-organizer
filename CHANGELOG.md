@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Repo-state files: STATE.md, ROADMAP.md, LESSONS.md, docs/DECISIONS.md, docs/plans/, and a
+  justfile with `check` and per-phase verify targets. A `state-guard` CI job fails a PR that
+  changes code without STATE.md (`chore:`/`deps:` titles exempt). The sandbox denies writes to
+  `./justfile`, which the owner runs outside it.
+
 - `plan` no longer invents holding folders on a collision. A dump child whose target exists
   merges into it like any other folder (its empty shell is left for `empty-dirs`) instead of
   moving whole to `<target>/from-<dump>`; `DUMP_NEST` is ignored with a note. A file whose name is
