@@ -277,6 +277,15 @@ def require_complete(db: sqlite3.Connection) -> None:
                          "complete). Move it aside and re-index.")
 
 
+def refuse_executed_out(out: str) -> None:
+    """A generator must not overwrite a manifest that `apply` has run: its journal is bound to
+    that manifest's sha, so a rewrite would leave the round impossible to undo."""
+    for suffix in (".journal.jsonl", ".journal.jsonl.undo.jsonl"):
+        if os.path.exists(out + suffix):
+            raise SystemExit(f"--out {out} has an apply journal ({out}{suffix}): it was executed. "
+                             "Write the next round to a new file; keep this one for undo.")
+
+
 def load_protected(db: sqlite3.Connection, guard: Guard) -> None:
     guard.protected_pks = [r[0] for r in db.execute("SELECT pathkey FROM protected")]
 

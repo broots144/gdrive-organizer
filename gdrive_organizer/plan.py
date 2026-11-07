@@ -25,7 +25,9 @@ if byte-identical (same md5) to the file keeping the name; otherwise it stays wh
 as blocked "file_name_collision", and --collisions-out lists it (Drive IDs of both files and the
 contested target) so a rename rule can be written. Google Docs have no md5, so same-name Docs
 always take that route. Sensitive sources get override "sensitive".
-Not owned, not movable, recently modified, protected and dot items stay in place.
+Not owned, not movable, recently modified, protected and dot items stay in place, as do items
+already at their target, anything inside an atomic unit (nested units included), and a file
+whose target name is held by a folder. --out is refused once apply has journaled it.
 Output is counts only, never row paths.
 """
 from __future__ import annotations
@@ -80,6 +82,7 @@ def main(argv=None) -> int:
     ap.add_argument("--collisions-out",
                     help="write same-name, different-content clashes here (JSON Lines of IDs)")
     a = ap.parse_args(argv)
+    g.refuse_executed_out(a.out)
 
     cfg = g.load_config(a.config)
     guard = g.Guard(cfg)
@@ -133,7 +136,7 @@ def main(argv=None) -> int:
             return "not_owned"
         if r["can_move"] == 0:
             return "cannot_move"
-        if r["under_atomic"] and not r["atomic_root"]:
+        if r["under_atomic"]:  # nested roots too: only the outermost unit moves
             return "inside_atomic"
         if r["kind"] in FOLDER_KINDS:
             if newest.get(r["pathkey"], 0) > recent:
@@ -154,23 +157,43 @@ def main(argv=None) -> int:
             name = r["name"].strip() if r["name"] in strip_names else r["name"]
             assign[key] = rule["dst"].format(lh=lh(name, r["kind"]), orig=orig(r))
             rule_of[key] = rule["id"]
-    # keep outermost only (sources must be disjoint)
-    assigned_pks = {by_key[k]["pathkey"] for k in assign}
-    for k in list(assign):
-        if any(anc in assigned_pks for anc in ancestors(by_key[k]["pathkey"])):
+    # an item whose target is where it already is stays put (it is not its own collision)
+    def drop_in_place():
+        for k in [k for k, t in assign.items() if g.pkey(t) == by_key[k]["pathkey"]]:
             del assign[k]
-            blocked["nested_in_other_source"] += 1
+            counts["already_at_target"] += 1
+
+    counts = collections.Counter()
+    drop_in_place()
+    # gate first, so an outer match that cannot move does not take its inner matches with it
     for k in list(assign):
         reason = gate(by_key[k]) or ("protected_dst" if guard.path_violation(assign[k]) else None)
         if reason:
             del assign[k]
             blocked[reason] += 1
+    # then keep outermost only (sources must be disjoint)
+    assigned_pks = {by_key[k]["pathkey"] for k in assign}
+    for k in list(assign):
+        if any(anc in assigned_pks for anc in ancestors(by_key[k]["pathkey"])):
+            del assign[k]
+            blocked["nested_in_other_source"] += 1
 
     # 2. resolve collisions into mkdir + merge
     shells = set()
-    counts = collections.Counter()
     clashes = []
+
+    def reroute(k, new_target, counter, blocked_reason):
+        """Send k to a fallback target; if that is where it is already headed, the fallback is
+        occupied too, so leave the item in place instead of looping forever."""
+        if g.pkey(new_target) == g.pkey(assign[k]):
+            del assign[k]
+            blocked[blocked_reason] += 1
+        else:
+            assign[k] = new_target
+            counts[counter] += 1
+
     while True:
+        drop_in_place()  # a merge can hand a child its own path back
         groups = collections.defaultdict(list)
         for k, t in assign.items():
             groups[g.pkey(t)].append(k)
@@ -184,8 +207,15 @@ def main(argv=None) -> int:
             files = sorted((k for k in keys if by_key[k]["kind"] not in FOLDER_KINDS),
                            key=lambda k: by_key[k]["path"])
             occupant = None
-            if pk in by_pk and not exists_as_dir:
-                occupant = by_pk[pk][0]  # an indexed file already holds this name
+            others = [r for r in by_pk.get(pk, []) if r["key"] not in keys]  # never itself
+            if exists_as_dir and files:
+                for k in files:  # a folder holds the name: a file cannot land on it
+                    del assign[k]
+                    blocked["target_occupied"] += 1
+                changed = True
+                break
+            if others and not exists_as_dir:
+                occupant = others[0]  # an indexed file already holds this name
                 if occupant["kind"] in FOLDER_KINDS or len(files) != len(keys):
                     for k in keys:  # ambiguous, or folder against file: leave in place
                         del assign[k]
@@ -201,8 +231,8 @@ def main(argv=None) -> int:
                     continue
                 if r["kind"] not in FOLDER_KINDS:
                     if kr is not None and r["md5"] and r["md5"] == kr["md5"]:
-                        assign[k] = dup_dir + "/" + orig(r)
-                        counts["file_collision_to_duplicates"] += 1
+                        reroute(k, dup_dir + "/" + orig(r), "file_collision_to_duplicates",
+                                "duplicates_target_occupied")
                     else:
                         del assign[k]
                         blocked["file_name_collision"] += 1
@@ -210,8 +240,9 @@ def main(argv=None) -> int:
                                         "twin_key": kr["key"] if kr is not None else None})
                     changed = True
                 elif r["kind"] != "dir" or r["atomic_root"]:
-                    assign[k] = unsorted_dir + "/" + orig(r)  # unit cannot be split
-                    counts["unit_collision_to_unsorted"] += 1
+                    # unit cannot be split
+                    reroute(k, unsorted_dir + "/" + orig(r), "unit_collision_to_unsorted",
+                            "unsorted_target_occupied")
                     changed = True
                 else:
                     del assign[k]

@@ -37,6 +37,7 @@ def main(argv=None) -> int:
     ap.add_argument("--policy", required=True)
     ap.add_argument("--out", required=True)
     a = ap.parse_args(argv)
+    g.refuse_executed_out(a.out)
 
     cfg = g.load_config(a.config)
     guard = g.Guard(cfg)

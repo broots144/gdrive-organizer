@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+- `dedupe` never keeps a copy someone else owns: owned copies rank first, and a group with no
+  owned copy yields no ops. `validate` refuses a `keep_key` you do not own, and `apply` (drive)
+  checks `ownedByMe` on the copy to keep live before trashing. Before, a shared copy under a
+  preferred `KEEP_ORDER` prefix could be kept while your only copy went to the trash.
+
+- `plan` leaves an item whose rule target is its current path alone (counted as
+  `already_at_target`). Before, it collided with itself, and a second round of the backups rule
+  moved the only copies into `archive/duplicates`.
+
+- `plan` and `validate` treat a nested atomic root (a `node_modules` or inner project inside a
+  repo) as part of the outer unit: it never moves on its own.
+
+- `plan` terminates when three or more identical files share one name and folder (the third is
+  left in place as `duplicates_target_occupied`); gates (recent, not owned, protected) run before
+  outer matches drop inner ones, so an outer folder that cannot move no longer takes movable
+  inner matches with it; and a file whose target name is held by a folder stays in place as
+  `target_occupied` instead of producing a move that fails validation.
+
+- `plan`, `dedupe` and `empty-dirs` refuse an `--out` that has an apply journal next to it, so an
+  executed manifest (which its journal and undo are bound to) is never overwritten.
+
 - Installs are hash-pinned: `requirements.txt` is a universal lock (every extra, Python 3.10+,
   every platform, setuptools included) compiled from pyproject.toml by `just lock`. CI, the README
   and `just install` run `pip install --require-hashes -r requirements.txt` and then

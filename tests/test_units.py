@@ -25,6 +25,7 @@ from gdrive_organizer import core as g  # noqa: E402
 from gdrive_organizer import dedupe  # noqa: E402
 from gdrive_organizer import drive_api as gdrive  # noqa: E402
 from gdrive_organizer import empty_dirs  # noqa: E402
+from gdrive_organizer import plan as planmod  # noqa: E402
 from gdrive_organizer import validate as v  # noqa: E402
 
 OLD = time.time() - 400 * 86400
@@ -888,7 +889,8 @@ def drive_state():
     return {
         "A": {"name": "A", "mimeType": F, "parents": ["ROOT"]},
         "f1": {"name": "f1.txt", "parents": ["A"], "md5Checksum": "m", "size": "5"},
-        "keep": {"name": "keep.txt", "parents": ["ROOT"], "md5Checksum": "m", "size": "5"},
+        "keep": {"name": "keep.txt", "parents": ["ROOT"], "md5Checksum": "m", "size": "5",
+                 "ownedByMe": True},
         "D": {"name": "D", "mimeType": F, "parents": ["ROOT"]},
         "two": {"name": "two", "parents": ["A", "D"]},
     }
@@ -924,6 +926,8 @@ def drive_backend_trash_and_undo_checks():
             (lambda s: s["f1"].pop("md5Checksum"), "src content changed"),
             (lambda s: s["keep"].update(trashed=True), "copy to keep is gone"),
             (lambda s: s["keep"].update(size="6"), "no longer identical"),
+            (lambda s: s["keep"].update(ownedByMe=False), "copy to keep is not owned by you"),
+            (lambda s: s["keep"].pop("ownedByMe"), "copy to keep is not owned by you"),
             (lambda s: s["A"].update(name="Renamed"), "not at the reviewed path"),
             (lambda s: s["A"].update(parents=["ROOT", "D"]), "not at the reviewed path")):
         fresh = drive_state()
@@ -1066,6 +1070,175 @@ def lock_is_hashed_and_meets_floors():
     recipe = re.search(r"\nlock:\n((?:    .*\n)+)", justfile).group(1)
     recipe = " ".join(recipe.replace("\\\n", " ").split())
     assert recipe == header, (recipe, header)
+
+
+# ------------------------------------------------------------------ review 2026-11-07 (generators)
+
+
+def _plan(d, rows, rules, out="plan.jsonl"):
+    """Run `plan` on a fresh index with these rows and this RULES body; returns (rc, stdout,
+    ops, db path). A hang (the old collision loop) fails the test instead of the run."""
+    import signal
+    dbp = os.path.join(d, "idx.sqlite")
+    if os.path.exists(dbp):
+        os.remove(dbp)
+    mkdb(dbp, rows).close()
+    with open(os.path.join(d, "cfg.json"), "w") as fh:
+        json.dump(CFG, fh)
+    with open(os.path.join(d, "rules.py"), "w") as fh:
+        fh.write(rules)
+    outp = os.path.join(d, out)
+
+    def hang(*_):
+        raise AssertionError("plan did not terminate")
+    old = signal.signal(signal.SIGALRM, hang)
+    signal.alarm(20)
+    try:
+        rc, stdout, err = run_main(planmod, ["--db", dbp, "--config", os.path.join(d, "cfg.json"),
+                                             "--rules", os.path.join(d, "rules.py"), "--out", outp])
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, old)
+    ops = [json.loads(x) for x in open(outp)] if rc == 0 else []
+    return rc, stdout + err, ops, dbp
+
+
+def _valid(dbp, ops):
+    for n, op in enumerate(ops, 1):
+        op["_line"] = n
+    errors, _, _ = v.validate(g.open_db(dbp), CFG, ops)
+    return errors
+
+
+@test
+def review_dedupe_keeps_an_owned_copy():
+    """M2: the kept copy must be one the owner owns, in dedupe, validate and the backend."""
+    d = tmpdir()
+    rows = [
+        # the shared copy sits under the preferred prefix and would win on path rank alone
+        item("SH", "Reference/a.pdf", parent="RF", md5="m", size=9, owned=0),
+        item("MY", "Downloads/a.pdf", parent="DL", md5="m", size=9),
+        item("MY2", "Downloads/old/a.pdf", parent="DO", md5="m", size=9),
+        # a group with no owned copy at all yields nothing
+        item("S1", "x/b.pdf", parent="X", md5="b", size=9, owned=0),
+        item("S2", "y/b.pdf", parent="Y", md5="b", size=9, owned=0),
+    ]
+    dbp = os.path.join(d, "idx.sqlite")
+    mkdb(dbp, rows).close()
+    json.dump(CFG, open(os.path.join(d, "cfg.json"), "w"))
+    with open(os.path.join(d, "pol.py"), "w") as fh:
+        fh.write("KEEP_ORDER = ['Reference']\n")
+    out = os.path.join(d, "out.jsonl")
+    rc, stdout, _ = run_main(dedupe, ["--db", dbp, "--config", os.path.join(d, "cfg.json"),
+                                      "--policy", os.path.join(d, "pol.py"), "--out", out])
+    assert rc == 0, stdout
+    ops = [json.loads(x) for x in open(out)]
+    assert [(o["src_key"], o["keep_key"]) for o in ops] == [("MY2", "MY")], ops
+    assert "'no_owned_copy': 1" in stdout and "'not_owned': 1" in stdout, stdout
+    # a hand-written op that keeps the shared copy is refused by validate
+    db = g.open_db(dbp)
+    e, _, _ = errs_for(db, [{"op": "trash", "src": "Downloads/a.pdf", "src_key": "MY",
+                             "keep_key": "SH"}])
+    assert "keep_key is not owned by you" in e, e
+    shutil.rmtree(d)
+    print("review M2: dedupe keeps an owned copy; validate and DriveBackend refuse a shared keep")
+
+
+@test
+def review_nested_atomic_roots():
+    """M3: a nested atomic root (node_modules inside a repo) is part of the outer unit."""
+    d = tmpdir()
+    rows = [
+        item("AR", "Archive", "dir", "ROOT"),
+        item("R", "repo", "dir", "ROOT", atomic_root=1),
+        item("NM", "repo/node_modules", "dir", "R", atomic_root=1, under_atomic="repo"),
+        item("NMF", "repo/node_modules/x.js", parent="NM", under_atomic="repo"),
+    ]
+    rc, out, ops, dbp = _plan(d, rows, "RULES = [dict(id='nm', where=\"i.name='node_modules'\", "
+                                       "dst='Archive/{lh}')]\n")
+    assert rc == 0 and not [o for o in ops if o["op"] == "move"], (out, ops)
+    assert "'inside_atomic': 1" in out, out
+    e, _, _ = errs_for(g.open_db(dbp), [{"op": "move", "src": "repo/node_modules",
+                                         "dst": "Archive/node_modules"}])
+    assert "inside atomic unit 'repo'" in e, e
+    # the outer unit itself still moves
+    e, _, _ = errs_for(g.open_db(dbp), [{"op": "move", "src": "repo", "dst": "Archive/repo"}])
+    assert not e, e
+    shutil.rmtree(d)
+    print("review M3: nested atomic roots move only with the outer unit (plan and validate)")
+
+
+@test
+def review_plan_collision_edges():
+    d = tmpdir()
+    # M4: an item already at its target stays put, never routed to duplicates as its own twin
+    rows = [item("A", "archive", "dir", "ROOT"),
+            item("B", "archive/backups", "dir", "A"),
+            item("Z", "archive/backups/db.zip", parent="B", md5="z", size=9)]
+    rc, out, ops, _ = _plan(d, rows, "RULES = [dict(id='bk', where=\"i.ext='.zip'\", "
+                                     "dst='archive/backups/{lh}')]\n")
+    assert rc == 0 and ops == [], (out, ops)
+    assert "'already_at_target': 1" in out and "duplicates" not in json.dumps(ops), out
+
+    # L1: three identical same-name files in one folder terminate: one takes the name, one goes
+    # to duplicates, the third finds that occupied and stays
+    rows = [item("D", "dump", "dir", "ROOT")] + [
+        item(k, "dump/x.pdf", parent="D", md5="s", size=9) for k in ("X1", "X2", "X3")]
+    rc, out, ops, dbp = _plan(d, rows, "RULES = [dict(id='docs', where=\"i.ext='.pdf'\", "
+                                       "dst='docs/{lh}')]\n")
+    assert rc == 0, out
+    moves = sorted(o["dst"] for o in ops if o["op"] == "move")
+    assert moves == ["archive/duplicates/dump/x.pdf", "docs/x.pdf"], ops
+    assert "'duplicates_target_occupied': 1" in out, out
+    assert not _valid(dbp, ops)
+
+    # L3: an outer match that is gated (recent) no longer swallows an inner match that can move
+    rows = [item("O", "Old", "dir", "ROOT"),
+            item("ON", "Old/new.txt", parent="O", mtime=NEW, md5="n", size=3),
+            item("OP", "Old/old.pdf", parent="O", md5="o", size=3)]
+    rules = ("RULES = [dict(id='outer', where=\"i.key='O'\", dst='archive/{lh}'),\n"
+             "         dict(id='inner', where=\"i.key='OP'\", dst='docs/{lh}')]\n")
+    rc, out, ops, dbp = _plan(d, rows, rules)
+    assert rc == 0, out
+    assert [(o["src_key"], o["dst"]) for o in ops if o["op"] == "move"] == [("OP", "docs/old.pdf")]
+    assert "'recent': 1" in out and "nested_in_other_source" not in out, out
+    assert not _valid(dbp, ops)
+
+    # L7: a folder holding the target name blocks a file from landing on it
+    rows = [item("DC", "docs", "dir", "ROOT"),
+            item("DR", "docs/report.pdf", "dir", "DC"),
+            item("IN", "inbox", "dir", "ROOT"),
+            item("F", "inbox/report.pdf", parent="IN", md5="r", size=3)]
+    rc, out, ops, _ = _plan(d, rows, "RULES = [dict(id='docs', where=\"i.key='F'\", "
+                                     "dst='docs/{lh}')]\n")
+    assert rc == 0 and ops == [] and "'target_occupied': 1" in out, (out, ops)
+    shutil.rmtree(d)
+    print("review M4/L1/L3/L7: in-place items, triple duplicates, gate before nesting, "
+          "folder occupant")
+
+
+@test
+def review_generators_refuse_executed_out():
+    """L4: plan, dedupe and empty-dirs never overwrite a manifest that has an apply journal."""
+    d = tmpdir()
+    rows = [item("A", "a", "dir", "ROOT")]
+    rc, out, _, dbp = _plan(d, rows, "RULES = []\n")
+    assert rc == 0, out
+    outp = os.path.join(d, "plan.jsonl")
+    open(outp + ".journal.jsonl", "w").close()
+    with open(outp, "w") as fh:
+        fh.write("executed\n")
+    with open(os.path.join(d, "pol.py"), "w") as fh:
+        fh.write("")
+    cfgp = os.path.join(d, "cfg.json")
+    for mod, extra in ((planmod, ["--rules", os.path.join(d, "rules.py")]),
+                       (dedupe, ["--policy", os.path.join(d, "pol.py")]),
+                       (empty_dirs, ["--policy", os.path.join(d, "pol.py")])):
+        rc, _, _ = run_main(mod, ["--db", dbp, "--config", cfgp, "--out", outp] + extra)
+        assert "has an apply journal" in str(rc), (mod.__name__, rc)
+        assert open(outp).read() == "executed\n"
+    shutil.rmtree(d)
+    print("review L4: generators refuse an --out that apply has journaled")
 
 
 # ------------------------------------------------------------------ main
