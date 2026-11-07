@@ -1,6 +1,6 @@
 # Current Build State
 
-Last updated: 2026-11-07 by Claude Code: security round r1 L4 (sec/2026-11-07-r1/hash-lock): installs are hash-pinned from `requirements.txt` (universal `uv pip compile` lock, D-014) in CI, the README and `just install`; L1 to L3 landed in #36.
+Last updated: 2026-11-07 by Claude Code: security round 2026-11-07 r1 complete (#36 L1 to L3, #37 L4); grade A, one documented Low (peek memory) below. The owner's `.venv` was reinstalled from the lock (pypdf 6.21.4, google-api-python-client 2.201.0, google-auth-oauthlib 1.5.0) and `just check` passes.
 
 ## Phases
 
@@ -71,6 +71,39 @@ ALL SANDBOX SETTINGS TESTS PASSED
 ALL STATE GUARD TESTS PASSED
 demo and CLI smoke ok
 ```
+
+## Security grade
+
+Security round 2026-11-07 r1 (rubric: A+ none above Informational plus defense in depth; A no
+open Medium or higher and every open Low documented here; B open Medium; C any High).
+
+**Current grade: A** (2026-11-07). All four verified findings are fixed: L1 pypdf floor in the venv,
+in `peek` and in `just check`/CI (#36); L2 parse timer that broad `except` cannot swallow (#36); L3
+files others own skipped by default and marked `untrusted`, snippet text is data (#36); L4
+hash-pinned lock for CI and installs (#37). Not A+ because of the accepted Low below.
+
+Open Lows (accepted risk, with reasons):
+
+- **Peek memory is not capped (rest of L2).** A crafted PDF or DOCX can still allocate a lot of
+  memory inside the 20 s parse window. Accepted: the input is capped at `--max-bytes` (15 MB),
+  DOCX zip bombs are refused, pypdf >= 6.21.4 bounds decompressed stream output and fixes the
+  known memory advisories, the timer now holds, and the impact is the owner's own `peek` run
+  (local availability, no data exposure, Ctrl-C ends it). The stronger fix (parse in a child
+  process with RLIMIT_AS) does not help on macOS, where the owner runs `peek`, because macOS does
+  not enforce RLIMIT_AS/RLIMIT_DATA. Revisit if pypdf 7 (planned floor, Next 1) is not enough.
+
+Blocked on the operator or money: none.
+
+Informational (no action needed for the grade):
+
+- The lock's transitive pins get no Dependabot cooldown when `just lock` re-resolves them (only
+  direct floor bumps wait 3/7 days). Hashes still stop a tampered artifact for an existing
+  version. To verify on the next weekly Dependabot pip run: it should update `requirements.txt`
+  with the floor (fact: dependabot-core has a `pip_compile_uv_header.txt` fixture for uv
+  compiled files; estimate: it reruns the header command). If a Dependabot pip PR fails CI
+  because only pyproject moved, run `just lock` on its branch.
+- Prompt injection through snippets is reduced, not removed: owned files can carry text others
+  wrote. The real stop is that the assistant cannot write to Drive (sandbox, `--confirm-sha`).
 
 ## Open / BLOCKED
 
