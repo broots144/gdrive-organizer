@@ -4,10 +4,11 @@
 Patterns come from files that are never committed:
   .private-patterns        one literal string per line, case-insensitive (# comments allowed)
   private/config.json      every protected_names entry is added automatically
-Also refuses a commit identity that is not a GitHub noreply address.
+Also refuses a commit identity (author or committer, from config, environment or git's own
+guess) that is not a GitHub noreply address.
 
   python3 scripts/leak_check.py --all          # every file git would track
-  python3 scripts/leak_check.py --staged       # staged files (pre-commit hook)
+  python3 scripts/leak_check.py --staged       # staged blobs, as committed (pre-commit hook)
   python3 scripts/leak_check.py --msg FILE     # commit message (commit-msg hook)
 
 Findings print as file:line and pattern number, never the pattern text, so running this inside
@@ -40,6 +41,36 @@ def git(*args):
     return subprocess.run(["git", *args], cwd=REPO, capture_output=True, text=True).stdout
 
 
+def staged_text(path):
+    """The blob staged for `path` (what the commit will contain), not the working tree copy,
+    which can differ or be gone. None when it is not UTF-8 text."""
+    r = subprocess.run(["git", "show", f":{path}"], cwd=REPO, capture_output=True)
+    if r.returncode != 0:
+        return None
+    try:
+        return r.stdout.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+
+
+def identity_problems():
+    """Author and committer email as git will actually record them: config, the GIT_AUTHOR_* /
+    GIT_COMMITTER_* environment, or git's own guess (login@host) when nothing is set."""
+    probs = []
+    for var in ("GIT_AUTHOR_IDENT", "GIT_COMMITTER_IDENT"):
+        r = subprocess.run(["git", "var", var], cwd=REPO, capture_output=True, text=True)
+        ident = r.stdout.strip() if r.returncode == 0 else ""
+        if not ident:
+            continue  # git cannot form an identity, so it cannot commit either
+        email = ident[ident.find("<") + 1:ident.rfind(">")] if "<" in ident else ""
+        if not email.endswith("@users.noreply.github.com"):
+            who = "author" if "AUTHOR" in var else "committer"
+            probs.append(f"git {who} email is not a GitHub noreply address (set: git config "
+                         "user.email <id>+<login>@users.noreply.github.com, and check the "
+                         f"GIT_{who.upper()}_EMAIL and EMAIL environment variables)")
+    return probs
+
+
 def files(mode):
     if mode == "--staged":
         return [f for f in git("diff", "--cached", "--name-only", "--diff-filter=ACMR").splitlines() if f]
@@ -62,20 +93,21 @@ def main() -> int:
         with open(sys.argv[2], encoding="utf-8") as fh:
             scan_text("commit message", fh.read(), pats, hits)
     else:
-        email = git("config", "user.email").strip()
-        if email and not email.endswith("@users.noreply.github.com"):
-            hits.append("git user.email is not a GitHub noreply address "
-                        "(set: git config user.email <id>+<login>@users.noreply.github.com)")
+        hits += identity_problems()
         for f in files(mode):
-            path = os.path.join(REPO, f)
-            if not os.path.isfile(path):
-                continue
-            try:
-                with open(path, encoding="utf-8") as fh:
-                    text = fh.read()
-            except (UnicodeDecodeError, OSError):
-                continue
-            scan_text(f, text, pats, hits)
+            if mode == "--staged":
+                text = staged_text(f)  # the commit's content, even if the tree differs
+            else:
+                path = os.path.join(REPO, f)
+                text = None
+                if os.path.isfile(path):
+                    try:
+                        with open(path, encoding="utf-8") as fh:
+                            text = fh.read()
+                    except (UnicodeDecodeError, OSError):
+                        pass
+            if text is not None:
+                scan_text(f, text, pats, hits)
             scan_text(f"(filename) {f}", f, pats, hits)
     if not pats:
         print("leak_check: WARNING no private patterns configured (.private-patterns, "

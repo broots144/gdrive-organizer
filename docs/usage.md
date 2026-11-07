@@ -12,7 +12,7 @@ gdrive-organizer report      --db private/index.sqlite --config private/config.j
 The report is the only thing your assistant needs to read: totals, extensions, the largest
 folders, loose files, duplicates, atomic units and folders modified recently (`LIVE?`, a hint that
 something still syncs into them). Sensitive-looking names are masked and listed only in
-`private/quarantine.txt`, for you.
+`private/quarantine.txt` (mode 0600), for you; paths that contain a protected name are masked too.
 
 Re-index after every executed round: plans are validated against the index, so they must be
 built from the current state of your Drive.

@@ -5,7 +5,8 @@
 
 Sizing (estimate): 50,000 raw paths at ~100 bytes is ~5 MB, over a million tokens. This report
 is a few hundred lines. Sensitive-looking names are counted here and written only to a local
-quarantine file for you to read yourself; protected entries are counted, never named.
+quarantine file (mode 0600) for you to read yourself; protected entries are counted, never
+named, and a path that contains a protected name is masked.
 """
 from __future__ import annotations
 
@@ -41,6 +42,10 @@ def main(argv=None) -> int:
     g.require_complete(db)
 
     def show(path: str) -> str:
+        # a path that names a protected folder (a file called after it, outside it) is never
+        # printed: this report is what the assistant reads (CLAUDE.md rule 3)
+        if guard.text_hits_protected(path):
+            return "[protected-looking name, not shown]"
         return "[sensitive-looking name, see quarantine file]" if guard.is_sensitive_path(path) else path
     now = time.time()
     recent = now - cfg["recent_days"] * 86400
@@ -118,15 +123,23 @@ def main(argv=None) -> int:
 
     p(f"\n## top {a.top} largest files (sensitive-looking names excluded)")
     for r in sorted((r for r in files if not r["sensitive"]), key=lambda r: -(r["size"] or 0))[:a.top]:
-        p(f"{human(r['size']):>9}  {r['path']}")
+        p(f"{human(r['size']):>9}  {show(r['path'])}")
 
     sens = [r for r in rows if r["sensitive"]]
     p(f"\n## sensitive-looking names: {len(sens)} (listed only in {a.quarantine_out}, not here)")
     os.makedirs(os.path.dirname(os.path.abspath(a.quarantine_out)), exist_ok=True)
-    with open(a.quarantine_out, "w", encoding="utf-8") as fh:
+    # created 0600 (never readable by another local user, even briefly); an existing file is
+    # tightened before it is rewritten; a symlink at the path is refused
+    try:
+        fd = os.open(a.quarantine_out, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW,
+                     0o600)
+    except OSError as ex:
+        raise SystemExit(f"cannot write the quarantine file safely ({ex.strerror}); "
+                         "is it a symlink?")
+    os.fchmod(fd, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
         for r in sorted(sens, key=lambda r: r["path"]):
             fh.write(f"{r['kind']}\t{r['path']}\n")
-    os.chmod(a.quarantine_out, 0o600)
 
     print("\n".join(out))
     return 0

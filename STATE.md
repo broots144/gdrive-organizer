@@ -1,6 +1,6 @@
 # Current Build State
 
-Last updated: 2026-11-07 by Claude Code: review round 2026-11-07 r2 in progress (14 verified findings M1 to M8, L1, L3 to L8); #39 fixed the generator findings, this PR fixes apply and undo (M5, M6, M7, M8).
+Last updated: 2026-11-07 by Claude Code: review round 2026-11-07 r2 in progress (14 verified findings M1 to M8, L1, L3 to L8); #39 fixed the generator findings, #40 apply and undo, this PR the privacy findings (M1, L5, L6, L8).
 
 ## Phases
 
@@ -68,6 +68,12 @@ Last updated: 2026-11-07 by Claude Code: review round 2026-11-07 r2 in progress 
   `src_raw` to the reviewed path only (the index check refused every undo after a re-index);
   `validate.read_manifest` returns sha and ops from one read, used by `apply` and `validate`.
   Tests: `review_undo_*`, `review_check_journal_pathonly_moves`, `review_manifest_read_once`.
+- Review round 2026-11-07 r2, privacy (M1, L5, L6, L8): `leak_check --staged` reads staged
+  blobs with `git show :<path>`; the identity check uses `git var GIT_AUTHOR_IDENT` and
+  `GIT_COMMITTER_IDENT` (env overrides and git's guess included); `report` masks paths for which
+  `Guard.text_hits_protected` is true; `peek` flags such snippets and drops their text always;
+  `report` creates the quarantine file 0600 with `os.open(..., O_NOFOLLOW)` plus `fchmod`.
+  Tests: `review_report_and_peek_mask_protected_names`, `review_leak_check_staged_and_identity`.
 - Token files (`--token`) are created 0600 with `os.open` and an existing one is `fchmod` 0600
   before the token is written, so no other local user can read it at any point;
   `DriveBackend.move` and `.trash` refuse a protected src, src parent or keep id before any
