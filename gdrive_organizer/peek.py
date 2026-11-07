@@ -124,7 +124,7 @@ def _require_pypdf():
     have = _installed("pypdf")
     if have is None or _version_tuple(have) < _version_tuple(PYPDF_FLOOR):
         raise PeekRefused(f"pypdf {have} is below {PYPDF_FLOOR} (known parser DoS fixes); "
-                          'reinstall: pip install -U -e ".[all]"')
+                          'reinstall: just install')
 
 
 def _download_capped(svc, key, max_bytes):

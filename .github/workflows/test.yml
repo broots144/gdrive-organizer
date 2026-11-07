@@ -22,7 +22,10 @@ jobs:
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: ${{ matrix.python }}
-      - run: python -m pip install -e ".[all]"
+      - name: install the hash-pinned lock, then the package without resolving
+        run: |
+          python -m pip install --require-hashes -r requirements.txt
+          python -m pip install --no-deps --no-build-isolation -e .
       - name: installed dependencies meet pyproject floors
         run: |
           python scripts/check_floors.py

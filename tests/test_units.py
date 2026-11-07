@@ -1027,6 +1027,47 @@ def drive_backend_reconcile_and_resolution():
     print("drive backend: trash reconcile, folder id refusals, adopt_created, undo_reconcile")
 
 
+# ------------------------------------------------------------------ hash-pinned lock
+
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _read(name):
+    with open(os.path.join(REPO, name), encoding="utf-8") as fh:
+        return fh.read()
+
+
+@test
+def lock_is_hashed_and_meets_floors():
+    import importlib.util
+    import re
+    spec = importlib.util.spec_from_file_location(
+        "check_floors", os.path.join(REPO, "scripts", "check_floors.py"))
+    cf = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cf)
+    lock, pyproject, extra_in, justfile = (_read("requirements.txt"), _read("pyproject.toml"),
+                                           _read("requirements.in"), _read("justfile"))
+    pins = {}
+    for block in re.split(r"\n(?=[A-Za-z0-9])", lock):
+        m = re.match(r"([A-Za-z0-9_.-]+)==(\S+)", block)
+        if m:
+            assert "--hash=sha256:" in block, f"{m.group(1)} pinned without a hash"
+            pins.setdefault(m.group(1).lower(), m.group(2))
+    assert pins, "no pins in requirements.txt"
+    # every declared dependency is locked at or above its pyproject floor
+    bad = cf.check(cf.floors(pyproject), lambda d: pins.get(d.lower()))
+    assert not bad, bad
+    # the build backend is locked too (CI installs with --no-build-isolation)
+    build = re.search(r'requires = \["setuptools>=([0-9.]+)"\]', pyproject).group(1)
+    assert f"setuptools>={build}" in extra_in, "requirements.in setuptools floor != build-system"
+    assert "setuptools" in pins
+    # Dependabot reruns the header command; it must be the one `just lock` runs
+    header = re.search(r"#    (uv pip compile .*)", lock).group(1)
+    recipe = re.search(r"\nlock:\n((?:    .*\n)+)", justfile).group(1)
+    recipe = " ".join(recipe.replace("\\\n", " ").split())
+    assert recipe == header, (recipe, header)
+
+
 # ------------------------------------------------------------------ main
 
 

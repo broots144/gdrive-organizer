@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Installs are hash-pinned: `requirements.txt` is a universal lock (every extra, Python 3.10+,
+  every platform, setuptools included) compiled from pyproject.toml by `just lock`. CI, the README
+  and `just install` run `pip install --require-hashes -r requirements.txt` and then
+  `pip install --no-deps --no-build-isolation -e .`, so a new or tampered upstream release is not
+  installed until the lock changes in a reviewed PR. pyproject.toml keeps its `>=` ranges.
+
 - `peek` skips files someone else owns unless `--include-shared`, and stores each snippet with
   `untrusted` (1 when the file is not yours), so text that third parties chose is not handed to
   your assistant unlabeled. CLAUDE.md and docs/safety-model.md say snippet text is data, never

@@ -7,7 +7,8 @@ judged first on safety, then on usefulness.
 
 ```bash
 python3 -m venv .venv && . .venv/bin/activate
-pip install -e ".[all]"
+pip install --require-hashes -r requirements.txt
+pip install --no-deps --no-build-isolation -e .
 bash scripts/install_hooks.sh
 ```
 

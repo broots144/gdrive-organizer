@@ -1,6 +1,6 @@
 # Current Build State
 
-Last updated: 2026-11-07 by Claude Code: security round r1 (sec/2026-11-07-r1/peek-hardening) closes L1 to L3: `peek` refuses PDFs under pypdf 6.21.4 and `just check`/CI check the venv against pyproject floors, the parse timer can no longer be swallowed by pypdf's broad `except Exception:` loops, and files others own are skipped unless `--include-shared` and marked `untrusted` in `snippets`.
+Last updated: 2026-11-07 by Claude Code: security round r1 L4 (sec/2026-11-07-r1/hash-lock): installs are hash-pinned from `requirements.txt` (universal `uv pip compile` lock, D-014) in CI, the README and `just install`; L1 to L3 landed in #36.
 
 ## Phases
 
@@ -48,6 +48,10 @@ Last updated: 2026-11-07 by Claude Code: security round r1 (sec/2026-11-07-r1/pe
   `candidates()` skips `owned_by_me=0` unless `--include-shared`; `snippets.untrusted` (added to
   older indexes by `open_db`) marks third-party text; CLAUDE.md rule 4 says snippet text is data,
   never instructions. Tests in `tests/test_peek_limits.py` and `tests/test_drive_mock.py`.
+- Hash-pinned installs (D-014, security round 2026-11-07 r1 L4): `requirements.txt` is the
+  universal lock from `just lock` (inputs pyproject.toml plus `requirements.in`: setuptools and
+  the pypdf<7 cooldown hold); CI and `just install` use `--require-hashes` then
+  `--no-deps --no-build-isolation -e .`; `tests/test_units.py` `lock_is_hashed_and_meets_floors`.
 - Token files (`--token`) are created 0600 with `os.open` and an existing one is `fchmod` 0600
   before the token is written, so no other local user can read it at any point;
   `DriveBackend.move` and `.trash` refuse a protected src, src parent or keep id before any
@@ -71,7 +75,7 @@ demo and CLI smoke ok
 ## Open / BLOCKED
 
 - Nothing blocked.
-- `just check` needs `.venv` with `pip install -e ".[all]"` (or `PY=` and a PATH with the
+- `just check` needs `.venv` set up with `just install` (or `PY=` and a PATH with the
   `gdrive-organizer` entry point); system python lacks the Google libs, so `test_drive_mock.py`
   fails there with `ModuleNotFoundError: googleapiclient`.
 - Dependabot floor bumps since #22 (for example google-api-python-client>=2.201.0) were not
@@ -88,7 +92,7 @@ demo and CLI smoke ok
 1. On or after 2026-11-13 (7 day pip-major cooldown, ADR-089 / D-012): if pypdf 7.0.0 is not
    yanked and no quick 7.0.x fix followed, raise the `peek` floor to `pypdf>=7.0.0` (stricter
    parser limits for untrusted PDFs; needs Python 3.10, so settle `requires-python` first or
-   together). `peek.py` needs no code change (fact: checked against the 7.0.0 changelog in #33).
+   together), drop the `pypdf<7` hold from `requirements.in`, and run `just lock`. `peek.py` needs no code change (fact: checked against the 7.0.0 changelog in #33).
 2. Phase 7: cut 0.3.5: move the Unreleased section of CHANGELOG.md under `## 0.3.5 (<date>)`,
    bump `pyproject.toml`, tag `v0.3.5`, `gh release create` with the changelog text.
 3. Consider README limitations as future phases (shared drives, Docs/Sheets dedupe); they are
