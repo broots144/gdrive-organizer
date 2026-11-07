@@ -1,6 +1,6 @@
 # Current Build State
 
-Last updated: 2026-11-06 by Claude Code: `tests/test_units.py` (tests/coverage-2026-11-06c) raises statement coverage of the package from 82% to 93% (estimate: coverage.py 7.17, all test files plus the demo, subprocesses included). Review fixes: the OAuth token file is now created 0600 by `os.open` (before, `open()` then `chmod` left it umask-readable for a moment), and the Drive backend refuses a move or trash naming a protected id before any Drive call.
+Last updated: 2026-11-07 by Claude Code: security round r1 (sec/2026-11-07-r1/peek-hardening) closes L1 to L3: `peek` refuses PDFs under pypdf 6.21.4 and `just check`/CI check the venv against pyproject floors, the parse timer can no longer be swallowed by pypdf's broad `except Exception:` loops, and files others own are skipped unless `--include-shared` and marked `untrusted` in `snippets`.
 
 ## Phases
 
@@ -41,6 +41,13 @@ Last updated: 2026-11-06 by Claude Code: `tests/test_units.py` (tests/coverage-2
   command that reads an index refuses one without the `finished` marker (`core.require_complete`).
   Each has a regression test in `tests/test_drive_mock.py`, `test_fs_local.py` or
   `test_rules_to_plan.py`.
+- Peek hardening (security round 2026-11-07 r1, L1 to L3): `peek.PYPDF_FLOOR` (6.21.4) refuses
+  PDF parsing under an older pypdf; `scripts/check_floors.py` plus `pip check` run in `just
+  check` (`floors`) and CI; `_time_limit` raises `ParseTimeout` (BaseException) from an
+  `ITIMER_REAL` timer that re-fires every second, and `peek_safely` records it per file;
+  `candidates()` skips `owned_by_me=0` unless `--include-shared`; `snippets.untrusted` (added to
+  older indexes by `open_db`) marks third-party text; CLAUDE.md rule 4 says snippet text is data,
+  never instructions. Tests in `tests/test_peek_limits.py` and `tests/test_drive_mock.py`.
 - Token files (`--token`) are created 0600 with `os.open` and an existing one is `fchmod` 0600
   before the token is written, so no other local user can read it at any point;
   `DriveBackend.move` and `.trash` refuse a protected src, src parent or keep id before any

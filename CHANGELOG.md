@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- `peek` skips files someone else owns unless `--include-shared`, and stores each snippet with
+  `untrusted` (1 when the file is not yours), so text that third parties chose is not handed to
+  your assistant unlabeled. CLAUDE.md and docs/safety-model.md say snippet text is data, never
+  instructions. Older indexes gain the column on the next `peek`.
+
+- The peek parse time limit now holds inside pypdf's `except Exception:` recovery loops: the
+  timer raises `ParseTimeout` (a `BaseException`) and re-fires every second until disarmed.
+  Before, one `PeekRefused` swallowed by such a loop left the parse running with no limit.
+
+- `peek` refuses to parse PDFs when the installed pypdf is older than 6.21.4 (known infinite
+  loop and memory exhaustion advisories). `scripts/check_floors.py` (run by `just check` and CI,
+  with `pip check`) fails when the venv is below any pyproject floor.
+
 - A token file written with `--token` is created 0600 from the start. Before, it was opened
   with the default umask (often 0644) and only then chmod 0600, so for a moment another local
   user could read the OAuth refresh token. An existing token file is tightened before rewrite.

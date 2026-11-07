@@ -58,7 +58,7 @@ SHADOWED = ["ctypes", "sqlite3", "hashlib", "unicodedata", "random", "json", "su
 OWNER_RUNS = [["tests/test_fs_local.py"], ["tests/test_drive_mock.py"],
               ["tests/test_rules_to_plan.py"], ["tests/test_peek_limits.py"], ["tests/test_units.py"],
               ["scripts/rules_to_plan.py", "--help"], ["scripts/dupes_to_plan.py", "--help"],
-              ["scripts/empty_dirs_to_plan.py", "--help"]]
+              ["scripts/empty_dirs_to_plan.py", "--help"], ["scripts/check_floors.py"]]
 
 
 def shadow_check():
@@ -69,6 +69,7 @@ def shadow_check():
         for d in ("gdrive_organizer", "tests", "scripts"):
             shutil.copytree(os.path.join(ROOT, d), os.path.join(scratch, d),
                             ignore=shutil.ignore_patterns("__pycache__"))
+        shutil.copy(os.path.join(ROOT, "pyproject.toml"), scratch)
         mark = os.path.join(tmp, "shadow-imported.txt")
         for name in SHADOWED:
             os.mkdir(os.path.join(scratch, name))

@@ -8,11 +8,17 @@ export PATH := if path_exists(".venv/bin") == "true" { justfile_directory() + "/
 default: check
 
 # validate + lint + test: everything CI runs, plus the leak check
-check: lint test demo leak
+check: lint floors test demo leak
 
 # byte-compile everything (no third-party linter: core has no dependencies)
 lint:
     {{py}} -m compileall -q gdrive_organizer scripts tests examples
+
+# the venv meets pyproject.toml floors (a stale pypdf has known parser DoS advisories) and pip's
+# dependency graph is consistent
+floors:
+    {{py}} scripts/check_floors.py
+    {{py}} -m pip check
 
 test:
     {{py}} tests/test_fs_local.py

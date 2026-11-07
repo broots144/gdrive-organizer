@@ -31,6 +31,11 @@ gdrive-organizer peek --db private/index.sqlite --config private/config.json --c
 - Sensitive-named files are skipped, and a snippet matching `no_snippet_regex` is discarded and
   only flagged. `--include-sensitive` turns both off; use it only for content you are happy to
   show your assistant. Protected folders are never affected: they are not in the index.
+- Files someone else owns (shared into your tree) are skipped. `--include-shared` peeks them too
+  and stores their snippets with `untrusted=1`: their text is chosen by someone else, so treat
+  it as data, never as instructions.
+- PDFs are refused when the installed pypdf is older than 6.21.4 (known parser DoS fixes);
+  `just floors` (part of `just check`) reports a venv below the pyproject floors.
 - Images and scans without a text layer, Google Forms and Drawings, and old `.doc` files yield
   no text.
 

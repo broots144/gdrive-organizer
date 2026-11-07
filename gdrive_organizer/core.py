@@ -224,7 +224,8 @@ CREATE TABLE IF NOT EXISTS protected(path TEXT, pathkey TEXT, key TEXT, reason T
 CREATE TABLE IF NOT EXISTS errors(path TEXT, err TEXT);
 CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT);
 CREATE TABLE IF NOT EXISTS snippets(
-  key TEXT PRIMARY KEY, method TEXT, text TEXT, flagged INTEGER, error TEXT);
+  key TEXT PRIMARY KEY, method TEXT, text TEXT, flagged INTEGER, error TEXT,
+  untrusted INTEGER);
 """
 
 ITEM_COLS = [
@@ -240,6 +241,14 @@ def open_db(path: str, fresh: bool = False) -> sqlite3.Connection:
     db = sqlite3.connect(path)
     db.row_factory = sqlite3.Row
     db.executescript(SCHEMA)
+    # indexes from before 0.3.5 lack snippets.untrusted (1 = text from a file someone else owns)
+    # (a sandboxed read-only open cannot migrate; peek, run by the owner, does)
+    if "untrusted" not in {r[1] for r in db.execute("PRAGMA table_info(snippets)")}:
+        try:
+            db.execute("ALTER TABLE snippets ADD COLUMN untrusted INTEGER")
+            db.commit()
+        except sqlite3.OperationalError:
+            pass
     return db
 
 
