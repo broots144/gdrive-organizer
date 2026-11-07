@@ -38,6 +38,8 @@ from __future__ import annotations
 
 import argparse
 import collections
+import hashlib
+import io
 import json
 import sys
 import time
@@ -47,9 +49,10 @@ from . import core as g
 PROG = "gdrive-organizer validate"
 
 
-def load_manifest(path: str):
+def parse_manifest(data: bytes):
+    """Ops from the manifest's bytes (lines split as a text-mode file would split them)."""
     ops = []
-    with open(path, "r", encoding="utf-8") as fh:
+    with io.TextIOWrapper(io.BytesIO(data), encoding="utf-8") as fh:
         for n, line in enumerate(fh, 1):
             line = line.strip()
             if not line or line.startswith("#"):
@@ -58,6 +61,18 @@ def load_manifest(path: str):
             op["_line"] = n
             ops.append(op)
     return ops
+
+
+def read_manifest(path: str):
+    """(sha256, ops) from ONE read of the manifest, so the ops that run are exactly the bytes
+    whose sha the owner confirmed, even if the file is rewritten between two reads."""
+    with open(path, "rb") as fh:
+        data = fh.read()
+    return hashlib.sha256(data).hexdigest(), parse_manifest(data)
+
+
+def load_manifest(path: str):
+    return read_manifest(path)[1]
 
 
 def ancestors(pk: str):
@@ -342,7 +357,7 @@ def main(argv=None) -> int:
     cfg = g.load_config(a.config)
     db = g.open_db(a.db)
     g.require_complete(db)
-    ops = load_manifest(a.manifest)
+    sha, ops = read_manifest(a.manifest)
     errors, warns, plan = validate(db, cfg, ops)
     moves = [p for p in plan if p["op"] == "move"]
     print(f"ops={len(ops)} valid={len(plan)} errors={len(errors)} warnings={len(warns)}")
@@ -357,7 +372,7 @@ def main(argv=None) -> int:
         print("ERROR", e)
     for w in warns[:50]:
         print("WARN ", w)
-    print(f"manifest sha256={g.sha256_file(a.manifest)}")
+    print(f"manifest sha256={sha}")
     return 1 if errors else 0
 
 
