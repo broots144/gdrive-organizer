@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- `scripts/leak_check.py --staged` (the pre-commit hook) scans the staged blobs (`git show
+  :<path>`), not the working tree, so a private string that is staged and then deleted or edited
+  in the tree no longer slips through while the check prints clean. Filenames are checked for
+  every listed path, binary or not.
+
+- The commit identity check reads `git var GIT_AUTHOR_IDENT` and `GIT_COMMITTER_IDENT`, so it
+  covers the `GIT_AUTHOR_EMAIL` / `GIT_COMMITTER_EMAIL` / `EMAIL` environment and git's own
+  login@host guess when `user.email` is unset, for author and committer.
+
+- `report` masks any path that contains a protected name (a file named after a protected folder,
+  outside it), including the largest-files list; `peek` flags a snippet that names a protected
+  folder and drops its text, even with `--include-sensitive` (CLAUDE.md rule 3).
+
+- The quarantine file is created 0600 with `os.open` (an existing one is tightened before it is
+  rewritten, and a symlink at its path is refused), instead of being written with the umask and
+  chmodded afterwards.
+
 - `apply --undo` reconciles forward ops whose last journal record is `intent` or `failed`
   (Drive may have acted before the call timed out) before undoing: an applied one is journaled
   as done and reversed, an unapplied one is skipped, and one that cannot be settled (unknown

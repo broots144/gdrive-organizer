@@ -18,7 +18,8 @@ Candidates: not sensitive, not inside an atomic unit, and either a generic name 
 generic_name_regex) or a loose document at depth 0-1. --max-depth N narrows that to items at
 depth <= N (0 = the top level of My Drive) and then takes every document there, not only
 generic names.
-Any snippet matching no_snippet_regex is discarded and only flagged. Snippets stay in SQLite;
+Any snippet matching no_snippet_regex is discarded and only flagged, and so is any snippet that
+names a protected folder (protected_names / protected_regex), always. Snippets stay in SQLite;
 feed an LLM (or a local model) only unflagged snippets.
 --only-keys FILE peeks exactly the Drive IDs listed in FILE (one per line), for when names
 already explain most files and only a few need a look; sensitivity rules still apply.
@@ -252,6 +253,12 @@ def main(argv=None) -> int:
         method, text, err = peek_safely(svc, r, a.max_bytes, a.chars)
         if err:
             stats["errors"] += 1
+        elif text and guard.text_hits_protected(text):
+            # CLAUDE.md rule 3: a protected name never reaches the assistant, even with
+            # --include-sensitive; the row is kept (flagged, no text) so it is not peeked again
+            flagged, text = 1, None
+            stats["flagged"] += 1
+            stats["protected_text"] = stats.get("protected_text", 0) + 1
         elif text and guard.no_snippet and guard.no_snippet.search(text):
             flagged = 1
             if not a.include_sensitive:

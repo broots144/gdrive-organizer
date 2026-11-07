@@ -1371,6 +1371,147 @@ def review_manifest_read_once():
     print("review M8: manifest hashed and parsed from one read")
 
 
+# ------------------------------------------------------------------ review 2026-11-07 (privacy)
+
+
+@test
+def review_report_and_peek_mask_protected_names():
+    """L5: a protected name never reaches the assistant through report paths or peek snippets.
+    L8: the quarantine file is 0600 from creation, even under a permissive umask."""
+    from gdrive_organizer import peek, report
+    d = tmpdir()
+    big = 10 ** 9
+    rows = [item("IB", "Inbox", "dir", "ROOT"),
+            item("P1", f"Inbox/{PROTECTED} notes.pdf", parent="IB", size=big, md5="p"),
+            item("P2", f"{PROTECTED} copy", "dir", "ROOT"),
+            item("P3", f"{PROTECTED} copy/f.txt", parent="P2", size=3, md5="q"),
+            item("SN", "Inbox/medical bill.pdf", parent="IB", size=4, md5="s", sensitive=1),
+            item("OK", "Inbox/plain.pdf", parent="IB", size=big - 1, md5="o")]
+    dbp = os.path.join(d, "idx.sqlite")
+    mkdb(dbp, rows).close()
+    cfgp = os.path.join(d, "cfg.json")
+    json.dump(CFG, open(cfgp, "w"))
+    q = os.path.join(d, "q.txt")
+    with open(q, "w") as fh:
+        fh.write("old\n")
+    os.chmod(q, 0o644)
+    old_mask = os.umask(0)
+    try:
+        rc, out, _ = run_main(report, ["--db", dbp, "--config", cfgp, "--quarantine-out", q])
+        q2 = os.path.join(d, "fresh-q.txt")
+        rc2, _, _ = run_main(report, ["--db", dbp, "--config", cfgp, "--quarantine-out", q2])
+    finally:
+        os.umask(old_mask)
+    assert rc == 0 and rc2 == 0, out
+    assert PROTECTED.casefold() not in out.casefold(), out
+    assert "[protected-looking name, not shown]" in out and "Inbox/plain.pdf" in out, out
+    assert os.stat(q).st_mode & 0o777 == 0o600 and os.stat(q2).st_mode & 0o777 == 0o600
+    assert "medical bill" in open(q).read()
+    os.symlink(q2, os.path.join(d, "link.txt"))
+    rc, _, _ = run_main(report, ["--db", dbp, "--config", cfgp,
+                                 "--quarantine-out", os.path.join(d, "link.txt")])
+    # O_NOFOLLOW: a symlink planted at the quarantine path is not followed
+    assert "cannot write the quarantine file safely" in str(rc), rc
+
+    # peek: a snippet naming a protected folder is flagged and its text dropped, always
+    texts = {"OK": f"see the {PROTECTED} folder for the originals", "P1": "plain words"}
+    real = (peek.peek_safely, peek._require_pypdf, gdrive.service)
+    peek.peek_safely = lambda svc, r, mb, ch: ("pdf", texts.get(r["key"], "x"), None)
+    peek._require_pypdf = lambda: None
+    gdrive.service = lambda *a, **k: object()
+    try:
+        with g.open_db(dbp) as db:
+            g.set_meta(db, "backend", "drive")
+        for extra in ([], ["--include-sensitive"]):
+            with g.open_db(dbp) as db:
+                db.execute("DELETE FROM snippets")
+            rc, out, _ = run_main(peek, ["--db", dbp, "--config", cfgp, "--client-secret", "x",
+                                         "--only-keys", _keys_file(d, ["OK", "P1"])] + extra)
+            assert rc == 0, out
+            snips = {k: (t, f) for k, t, f in
+                     g.open_db(dbp).execute("SELECT key, text, flagged FROM snippets")}
+            assert snips["OK"] == (None, 1), (extra, snips)
+            assert snips["P1"] == ("plain words", 0), (extra, snips)
+            assert "'protected_text': 1" in out, out
+    finally:
+        peek.peek_safely, peek._require_pypdf, gdrive.service = real
+    shutil.rmtree(d)
+    print("review L5/L8: report masks protected-looking paths, peek drops protected snippet "
+          "text, quarantine 0600 from creation")
+
+
+def _keys_file(d, keys):
+    p = os.path.join(d, "keys.txt")
+    with open(p, "w") as fh:
+        fh.write("\n".join(keys) + "\n")
+    return p
+
+
+def _leak_repo(d):
+    """A throwaway git repo with a copy of scripts/leak_check.py and one private pattern."""
+    import subprocess
+    repo = os.path.join(d, "repo")
+    os.makedirs(os.path.join(repo, "scripts"))
+    shutil.copy(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                             "scripts", "leak_check.py"), os.path.join(repo, "scripts"))
+    with open(os.path.join(repo, ".private-patterns"), "w") as fh:
+        fh.write("zebrafinch-canary\n")
+    with open(os.path.join(repo, ".gitignore"), "w") as fh:
+        fh.write(".private-patterns\n")
+    env = {k: val for k, val in os.environ.items() if not k.startswith("GIT_") and k != "EMAIL"}
+    env.update(GIT_CONFIG_GLOBAL=os.path.join(d, "gitconfig"), GIT_CONFIG_NOSYSTEM="1",
+               HOME=d)
+    open(os.path.join(d, "gitconfig"), "w").close()
+
+    def git(*a):
+        subprocess.run(["git", *a], cwd=repo, env=env, check=True, capture_output=True)
+
+    def check(mode, **extra_env):
+        r = subprocess.run([sys.executable, "scripts/leak_check.py", mode], cwd=repo,
+                           env=dict(env, **extra_env), capture_output=True, text=True)
+        return r.returncode, r.stdout + r.stderr
+    git("init", "-q")
+    git("config", "user.name", "t")
+    git("config", "user.email", "1+t@users.noreply.github.com")
+    git("config", "commit.gpgsign", "false")
+    return repo, git, check
+
+
+@test
+def review_leak_check_staged_and_identity():
+    """M1: --staged scans the staged blobs. L6: the identity check covers env overrides and
+    git's own guess, for author and committer."""
+    d = tmpdir()
+    repo, git, check = _leak_repo(d)
+    with open(os.path.join(repo, "notes.txt"), "w") as fh:
+        fh.write("hello zebrafinch-canary\n")
+    git("add", "notes.txt")
+    assert check("--staged")[0] == 1
+    # staged, then deleted in the working tree: the commit still carries it
+    os.remove(os.path.join(repo, "notes.txt"))
+    rc, out = check("--staged")
+    assert rc == 1 and "notes.txt:1: matches private pattern #1" in out, out
+    # staged, then cleaned in the working tree only
+    with open(os.path.join(repo, "notes.txt"), "w") as fh:
+        fh.write("hello\n")
+    assert check("--staged")[0] == 1
+    git("add", "notes.txt")
+    rc, out = check("--staged")
+    assert rc == 0 and "clean" in out, out
+    # identity: env overrides and an unset user.email (git falls back to EMAIL or login@host)
+    rc, out = check("--staged", GIT_AUTHOR_EMAIL="me@example.com")
+    assert rc == 1 and "author email is not a GitHub noreply" in out, out
+    rc, out = check("--staged", GIT_COMMITTER_EMAIL="me@example.com")
+    assert rc == 1 and "committer email is not a GitHub noreply" in out, out
+    git("config", "--unset", "user.email")
+    rc, out = check("--all", EMAIL="me@example.com")
+    assert rc == 1 and "author email" in out and "committer email" in out, out
+    rc, out = check("--all", EMAIL="2+t@users.noreply.github.com")
+    assert rc == 0, out
+    shutil.rmtree(d)
+    print("review M1/L6: leak_check scans staged blobs and the effective author/committer email")
+
+
 # ------------------------------------------------------------------ main
 
 
