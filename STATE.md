@@ -1,6 +1,6 @@
 # Current Build State
 
-Last updated: 2026-11-07 by Claude Code: review round 2026-11-07 r2 in progress (14 verified findings M1 to M8, L1, L3 to L8); this PR fixes the generator findings M2, M3, M4, L1, L3, L4, L7.
+Last updated: 2026-11-07 by Claude Code: review round 2026-11-07 r2 in progress (14 verified findings M1 to M8, L1, L3 to L8); #39 fixed the generator findings, this PR fixes apply and undo (M5, M6, M7, M8).
 
 ## Phases
 
@@ -61,6 +61,13 @@ Last updated: 2026-11-07 by Claude Code: review round 2026-11-07 r2 in progress 
   occupied, and blocks a file whose target is a folder; `core.refuse_executed_out` stops `plan`,
   `dedupe` and `empty-dirs` overwriting an `--out` with an apply journal. Tests: the `review_*`
   groups in `tests/test_units.py`.
+- Review round 2026-11-07 r2, apply and undo (M5 to M8): `apply.settle_in_doubt` reconciles
+  forward ops left at `intent` or `failed` before `--undo` (applied ones are journaled done and
+  reversed; unsettleable ones stop the undo before it starts); `check_journal` accepts a move
+  written without `src_key` when all its records name one resolved ID; `FsBackend.undo` binds
+  `src_raw` to the reviewed path only (the index check refused every undo after a re-index);
+  `validate.read_manifest` returns sha and ops from one read, used by `apply` and `validate`.
+  Tests: `review_undo_*`, `review_check_journal_pathonly_moves`, `review_manifest_read_once`.
 - Token files (`--token`) are created 0600 with `os.open` and an existing one is `fchmod` 0600
   before the token is written, so no other local user can read it at any point;
   `DriveBackend.move` and `.trash` refuse a protected src, src parent or keep id before any

@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- `apply --undo` reconciles forward ops whose last journal record is `intent` or `failed`
+  (Drive may have acted before the call timed out) before undoing: an applied one is journaled
+  as done and reversed, an unapplied one is skipped, and one that cannot be settled (unknown
+  state, or no longer validating after a re-index) stops the undo before anything is reversed.
+  Before, undo skipped them, reported success and locked the journal.
+
+- Undo after a re-index works for moves written without `src_key` (allowed by `validate` and
+  used in `examples/plan.example.jsonl`): the journal's resolved ID is accepted when every record
+  of that op names the same one. On the fs backend undo no longer compares the journal with the
+  re-indexed index (which lists the moved inode at its destination), so it is no longer refused
+  after every re-index; `src_raw` stays bound to the reviewed src path.
+
+- `apply` and `validate` hash and parse the manifest from one read
+  (`validate.read_manifest`), so a rewrite between two reads cannot run unreviewed ops under the
+  confirmed sha.
+
 - `dedupe` never keeps a copy someone else owns: owned copies rank first, and a group with no
   owned copy yields no ops. `validate` refuses a `keep_key` you do not own, and `apply` (drive)
   checks `ownedByMe` on the copy to keep live before trashing. Before, a shared copy under a

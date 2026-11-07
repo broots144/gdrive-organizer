@@ -109,6 +109,7 @@ def check_journal(recs, sha, plan, ops):
     if recs[0].get("state") != "header":
         raise SystemExit("journal has no manifest header; refusing to use it")
     by_i = {e["i"]: e for e in plan}
+    resolved = {}  # op index -> the src_key its records name, for moves written without one
     for r in recs:
         if r.get("state") == "header":
             if r.get("manifest_sha") != sha:
@@ -124,8 +125,17 @@ def check_journal(recs, sha, plan, ops):
             e = {"op": op.get("op"), "dst": g.nfc(op.get("dst", "")).strip("/"),
                  "src": g.nfc(op["src"]).strip("/") if op.get("src") else None,
                  "src_key": op.get("src_key")}
+            keys = ("op", "dst", "src", "src_key")
+            if e["op"] == "move" and not e["src_key"] and r.get("state") in ("intent", "done"):
+                # the manifest named this move by path only (validate allows that when the path
+                # is unique), so the record carries the ID validate resolved. Every record of
+                # the op must name the same one; undo then checks it live at the planned dst.
+                if resolved.setdefault(i, r.get("src_key")) != r.get("src_key"):
+                    raise SystemExit(f"journal records for op {i} name different items; "
+                                     "refusing to use this journal")
+                keys = ("op", "dst", "src")
             if r.get("state") in ("intent", "done") and any(
-                    (r.get(k) or None) != (e.get(k) or None) for k in ("op", "dst", "src", "src_key")):
+                    (r.get(k) or None) != (e.get(k) or None) for k in keys):
                 raise SystemExit(f"journal record for op {i} does not match the manifest; "
                                  "refusing to use this journal")
             continue
@@ -214,10 +224,10 @@ class FsBackend:
         if rec["op"] == "mkdir":
             os.rmdir(self.ab(rec["dst"]))  # only succeeds if empty
         else:
+            # src_raw is bound to the reviewed src path; the index is not consulted, because
+            # after a re-index the moved inode is listed at its destination
             if not op or g.pkey(rec.get("src_raw") or "") != g.pkey(op.get("src") or ""):
                 raise RuntimeError("journal src_raw is not the reviewed src path")
-            if self.raw.get(rec["src_key"]) != rec["src_raw"]:
-                raise RuntimeError("journal src_raw does not match the index")
             g.rename_excl(self.ab(rec["dst"]), self.ab(rec["src_raw"]))
 
 
@@ -538,13 +548,12 @@ def main(argv=None) -> int:
     g.require_complete(db)
     if g.get_meta(db, "backend") != a.backend:
         raise SystemExit("index backend does not match --backend")
-    sha = g.sha256_file(a.manifest)
+    sha, ops = v.read_manifest(a.manifest)  # one read: the ops are the bytes that were hashed
     if a.execute and a.confirm_sha != sha:
         raise SystemExit(f"--confirm-sha must equal the manifest sha256 ({sha}); "
                          "the manifest changed or was not reviewed")
     guard = g.Guard(cfg)
     g.load_protected(db, guard)
-    ops = v.load_manifest(a.manifest)
     errors, warns, plan = v.validate(db, cfg, ops)
     if errors and not a.undo:
         for e in errors[:50]:
@@ -572,7 +581,7 @@ def main(argv=None) -> int:
     check_journal(recs, sha, plan, ops)
 
     if a.undo:
-        return run_undo(be, recs, jpath, a, plan, ops)
+        return run_undo(be, recs, jpath, a, plan, ops, journal)
 
     if os.path.exists(jpath + ".undo.jsonl"):
         raise SystemExit("this journal has been undone; use a new --journal path for a fresh run")
@@ -633,12 +642,53 @@ def main(argv=None) -> int:
     return 0
 
 
-def run_undo(be, checked, jpath, a, plan, ops):
+def settle_in_doubt(be, checked, plan, journal):
+    """Forward ops whose last record is intent or failed may have been applied (Drive acted,
+    then the call timed out; a crash after the rename). Undo must not skip them silently: each
+    is reconciled against live state first, and a 'done' verdict is journaled so undo reverses
+    it. Returns the reconciled done records. Refuses when an op cannot be settled."""
+    by_i = {e["i"]: e for e in plan}
+    state = last_state(r for r in checked if r.get("state") != "header")
+    settled = []
+    for i, prev in sorted(state.items()):
+        if prev.get("state") not in ("intent", "failed"):
+            continue
+        e = by_i.get(i)
+        if e is None:
+            raise SystemExit(f"op {i} is journaled as {prev['state']} (it may have been applied) "
+                             "and no longer validates against this index, so it cannot be "
+                             "reconciled. Rerun the undo with --db set to the index this "
+                             "manifest was validated against (indexing never overwrites one), "
+                             "or inspect the op by hand. Nothing was undone.")
+        try:
+            verdict, extra = be.reconcile(e, prev)
+        except Exception as ex:
+            raise SystemExit(f"op {i} is journaled as {prev['state']} and could not be "
+                             f"reconciled: {ex!r}. Inspect by hand; nothing was undone.")
+        if verdict == "halt":
+            raise SystemExit(f"op {i} is journaled as {prev['state']} and is in an unknown "
+                             "state; inspect by hand. Nothing was undone.")
+        if verdict == "done":
+            rec = dict({"i": i, "state": "done", "op": e["op"], "dst": e["dst"],
+                        "src": e.get("src"), "src_key": e.get("src_key"), "reconciled": True},
+                       **extra)
+            journal.append(rec)
+            settled.append(rec)
+            print(f"op {i}: journaled as {prev['state']} but applied; recorded as done and "
+                  "included in the undo", flush=True)
+        else:
+            print(f"op {i}: journaled as {prev['state']}, not applied; nothing to undo",
+                  flush=True)
+    return settled
+
+
+def run_undo(be, checked, jpath, a, plan, ops, journal):
     """`checked` is the journal as check_journal accepted it; it is not read again.
 
-    Write-ahead like the forward path: undo-intent, act, undone. An undo left at undo-intent
-    (crash), or failed with an error that may have come after Drive acted (a timeout, not one
-    of our own refusals), is reconciled against live state before it is tried again."""
+    Ops left at intent or failed are reconciled first (settle_in_doubt). Write-ahead like the
+    forward path: undo-intent, act, undone. An undo left at undo-intent (crash), or failed with
+    an error that may have come after Drive acted (a timeout, not one of our own refusals), is
+    reconciled against live state before it is tried again."""
     upath = jpath + ".undo.jsonl"
     uj = Journal(upath)
     ustate = last_state(r for r in uj.read() if isinstance(r.get("i"), int))
@@ -646,11 +696,16 @@ def run_undo(be, checked, jpath, a, plan, ops):
     recs = [r for r in checked if r.get("state") == "done"]
     by_i = {e["i"]: e for e in plan}
     drive = isinstance(be, DriveBackend)
-    if drive:
+
+    def adopt(rs):
         # created folders resolve destination parents; each is verified again before its undo
-        for r in recs:
-            if r["op"] == "mkdir" and r.get("new_id") and r["i"] not in undone:
+        for r in rs:
+            if drive and r["op"] == "mkdir" and r.get("new_id") and r["i"] not in undone:
                 be.created[g.pkey(r["dst"])] = r["new_id"]
+    adopt(recs)
+    settled = settle_in_doubt(be, checked, plan, journal)
+    adopt(settled)
+    recs += settled
 
     def reconcile(args):
         """Returns (verdict, why). A fault in the reconcile itself halts too, but says so."""

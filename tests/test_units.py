@@ -753,8 +753,6 @@ def fs_backend_checks():
     assert be.undo_reconcile(rec) == "undone"         # b.txt is back, dst absent
     raises(RuntimeError, be.undo, rec, None, match="not the reviewed src path")
     raises(RuntimeError, be.undo, rec, {"src": "c.txt"}, match="not the reviewed src path")
-    raises(RuntimeError, be.undo, dict(rec, src_key="nope"), {"src": "b.txt"},
-           match="does not match the index")
     os.rmdir(os.path.join(root, "Fresh"))
     shutil.rmtree(d)
     print("fs backend: root checks, size/mtime/inode drift, reconcile and undo binding")
@@ -1239,6 +1237,138 @@ def review_generators_refuse_executed_out():
         assert open(outp).read() == "executed\n"
     shutil.rmtree(d)
     print("review L4: generators refuse an --out that apply has journaled")
+
+
+# ------------------------------------------------------------------ review 2026-11-07 (apply, undo)
+
+
+def _fs_run(d, root, man_ops, db="fs.sqlite"):
+    man = os.path.join(d, "m.jsonl")
+    write_jsonl(man, man_ops)
+    sha = g.sha256_file(man)
+    base = ["--backend", "fs", "--config", os.path.join(d, "cfg.json"), "--manifest", man,
+            "--allow-any-root", "--execute", "--confirm-sha", sha, "--pause", "0"]
+    return man, (lambda dbname=db, *extra: run_main(ap, base + ["--db", os.path.join(d, dbname)]
+                                                    + list(extra)))
+
+
+def _reindex(d, root, name):
+    rc, out, err = run_main(_index_fs(), ["--root", root, "--db", os.path.join(d, name),
+                                          "--config", os.path.join(d, "cfg.json"),
+                                          "--allow-any-root", "--no-xattrs"])
+    assert rc == 0, (out, err)
+
+
+@test
+def review_undo_after_reindex():
+    """M6 and M7: the documented flow (moves by path only, as in examples/plan.example.jsonl,
+    then a re-index, then undo) reverses every op on the fs backend."""
+    d, root = fs_setup()
+    os.chdir(d)
+    _, run = _fs_run(d, root, [{"op": "mkdir", "dst": "Archive/2021"},
+                               {"op": "move", "src": "a.txt", "dst": "Archive/2021/a.txt"},
+                               {"op": "move", "src": "b.txt", "dst": "Archive/2021/b.txt"}])
+    rc, out, _ = run()
+    assert rc == 0 and "complete: 3 ops" in out, out
+    _reindex(d, root, "fs2.sqlite")
+    rc, out, err = run("fs2.sqlite", "--undo")
+    assert rc == 0 and "undone 3 ops" in out, (rc, out, err)
+    assert sorted(os.listdir(root)) == ["Archive", "a.txt", "b.txt", "c.txt", "proj"]
+    assert os.listdir(os.path.join(root, "Archive")) == []
+    os.chdir(tempfile.gettempdir())
+    shutil.rmtree(d)
+    print("review M6/M7: undo after a re-index, moves written without src_key (fs)")
+
+
+@test
+def review_check_journal_pathonly_moves():
+    """M6: a move written without src_key binds to the ID its records resolved, consistently."""
+    plan = []
+    ops = [{"op": "move", "src": "x", "dst": "A/x"}]
+    hdr = {"i": -1, "state": "header", "manifest_sha": "S"}
+    it = {"i": 0, "state": "intent", "op": "move", "dst": "A/x", "src": "x", "src_key": "K"}
+    ap.check_journal([hdr, it, dict(it, state="done")], "S", plan, ops)
+    raises(SystemExit, ap.check_journal, [hdr, it, dict(it, state="done", src_key="OTHER")],
+           "S", plan, ops, match="name different items")
+    raises(SystemExit, ap.check_journal, [hdr, dict(it, dst="A/y")], "S", plan, ops,
+           match="does not match the manifest")
+    print("review M6: check_journal binds path-only moves to one resolved src_key")
+
+
+@test
+def review_undo_reconciles_in_doubt_ops():
+    """M5: an op whose last record is intent or failed may have been applied; undo reconciles it
+    instead of skipping it, and refuses when it cannot."""
+    d, root = fs_setup()
+    os.chdir(d)
+    man, run = _fs_run(d, root, [{"op": "mkdir", "dst": "Archive/2021"},
+                                 {"op": "move", "src": "a.txt", "dst": "Archive/2021/a.txt"},
+                                 {"op": "move", "src": "b.txt", "dst": "Archive/2021/b.txt"}])
+    rc, out, _ = run("fs.sqlite", "--max-ops", "2")
+    assert rc == 0, out
+    # a crash right after the third rename: intent journaled, rename done, no done record
+    j = ap.Journal(man + ".journal.jsonl")
+    j.read()
+    j.append({"i": 2, "state": "intent", "op": "move", "dst": "Archive/2021/b.txt",
+              "src": "b.txt", "src_key": g.open_db(os.path.join(d, "fs.sqlite")).execute(
+                  "SELECT key FROM items WHERE path='b.txt'").fetchone()[0]})
+    os.rename(os.path.join(root, "b.txt"), os.path.join(root, "Archive", "2021", "b.txt"))
+    rc, out, err = run("fs.sqlite", "--undo")
+    assert rc == 0 and "op 2: journaled as intent but applied" in out, (rc, out, err)
+    assert "undone 3 ops" in out, out
+    assert sorted(os.listdir(root)) == ["Archive", "a.txt", "b.txt", "c.txt", "proj"]
+    # an in-doubt op that no longer validates (after a re-index) is refused, not skipped
+    os.remove(man + ".journal.jsonl")
+    os.remove(man + ".journal.jsonl.undo.jsonl")
+    rc, out, _ = run("fs.sqlite", "--max-ops", "2")
+    assert rc == 0, out
+    j = ap.Journal(man + ".journal.jsonl")
+    j.read()
+    j.append({"i": 2, "state": "failed", "err": "TimeoutError()"})
+    os.remove(os.path.join(root, "b.txt"))  # b.txt gone: op 2 no longer validates
+    _reindex(d, root, "fs4.sqlite")
+    rc, out, _ = run("fs4.sqlite", "--undo")
+    assert "no longer validates" in str(rc) and "Nothing was undone" in str(rc), (rc, out)
+    assert not os.path.exists(man + ".journal.jsonl.undo.jsonl")
+    os.chdir(tempfile.gettempdir())
+    shutil.rmtree(d)
+    print("review M5: undo reconciles intent/failed ops first, refuses ones it cannot settle")
+
+
+@test
+def review_manifest_read_once():
+    """M8: the sha and the ops come from one read, so a rewrite between two reads cannot run
+    ops that were never reviewed under the confirmed sha."""
+    d = tmpdir()
+    p = os.path.join(d, "m.jsonl")
+    reviewed = b'{"op": "mkdir", "dst": "A"}\n'
+    with open(p, "wb") as fh:
+        fh.write(reviewed)
+    real_open, calls = open, []
+
+    def swapping_open(path, mode="r", *a, **kw):
+        # every read after the first sees a rewritten manifest
+        calls.append(path)
+        if path == p and len([c for c in calls if c == p]) > 1:
+            with real_open(p, "wb") as fh:
+                fh.write(b'{"op": "mkdir", "dst": "EVIL"}\n')
+        return real_open(path, mode, *a, **kw)
+    import builtins
+    builtins.open = swapping_open
+    try:
+        sha, ops = v.read_manifest(p)
+    finally:
+        builtins.open = real_open
+    assert [c for c in calls if c == p] == [p], calls
+    import hashlib
+    assert sha == hashlib.sha256(reviewed).hexdigest() and ops[0]["dst"] == "A", (sha, ops)
+    # line splitting matches a text-mode file: CRLF, and U+2028 inside a JSON string
+    with open(p, "wb") as fh:
+        fh.write('{"op": "mkdir", "dst": "a\u2028b"}\r\n# c\r\n{"op": "mkdir", "dst": "B"}\n'
+                 .encode("utf-8"))
+    assert [(o["dst"], o["_line"]) for o in v.load_manifest(p)] == [("a\u2028b", 1), ("B", 3)]
+    shutil.rmtree(d)
+    print("review M8: manifest hashed and parsed from one read")
 
 
 # ------------------------------------------------------------------ main
