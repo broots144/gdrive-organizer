@@ -30,7 +30,7 @@ MUST_DENY = [
     "private/config.json", "private/index.sqlite", "private/index.sqlite-journal",
     "private/index.sqlite-wal", "private/plan.jsonl.journal.jsonl",
     "private/plan.jsonl.journal.jsonl.undo.jsonl", "private/token_read.json",
-    "private/client_secret.json",
+    "private/client_secret.json", "requirements.txt", "requirements.in",
 ]
 MAY_WRITE = ["private/rules.py", "private/plan.jsonl", "private/report.txt"]
 
@@ -69,7 +69,8 @@ def shadow_check():
         for d in ("gdrive_organizer", "tests", "scripts"):
             shutil.copytree(os.path.join(ROOT, d), os.path.join(scratch, d),
                             ignore=shutil.ignore_patterns("__pycache__"))
-        shutil.copy(os.path.join(ROOT, "pyproject.toml"), scratch)
+        for f in ("pyproject.toml", "requirements.txt", "requirements.in", "justfile"):
+            shutil.copy(os.path.join(ROOT, f), scratch)
         mark = os.path.join(tmp, "shadow-imported.txt")
         for name in SHADOWED:
             os.mkdir(os.path.join(scratch, name))

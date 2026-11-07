@@ -31,7 +31,9 @@
         "./.mcp.json",
         "./*.py",
         "./*.pth",
-        "./justfile"
+        "./justfile",
+        "./requirements.txt",
+        "./requirements.in"
       ]
     }
   },

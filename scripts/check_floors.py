@@ -62,7 +62,7 @@ def main(argv=None):
     bad = check(required)
     if bad:
         print("installed dependencies below pyproject.toml floors:", *bad, sep="\n  ")
-        print('fix: pip install -U -e ".[all]"')
+        print('fix: just install (pip install --require-hashes -r requirements.txt, then --no-deps -e .)')
         return 1
     print(f"dependency floors ok ({len(required)} packages)")
     return 0

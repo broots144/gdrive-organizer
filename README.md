@@ -59,7 +59,8 @@ Details and limits: [docs/safety-model.md](docs/safety-model.md).
 ```bash
 git clone https://github.com/broots144/gdrive-organizer && cd gdrive-organizer
 python3 -m venv .venv && . .venv/bin/activate
-pip install -e ".[all]"                       # the api extra (so all) needs Python 3.10+
+pip install --require-hashes -r requirements.txt   # hash-pinned lock (Python 3.10+)
+pip install --no-deps --no-build-isolation -e .     # the package itself; or: just install
 bash scripts/install_hooks.sh                 # blocks commits that contain your private strings
 mkdir -p private && cp examples/config.example.json private/config.json
 ```

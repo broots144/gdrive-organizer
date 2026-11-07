@@ -33,3 +33,10 @@ recorded retroactively on 2026-11-06 from the code, docs and git history they ci
   `state-guard` job fails a PR that changes the package, `scripts/` or `pyproject.toml` without
   STATE.md, unless its title starts with `chore:` or `deps:` (Dependabot's `chore(deps):`
   passes). The justfile is sandbox write-denied like other owner-run code (D-008).
+- **D-014 (2026-11-07): hash-pinned installs.** pyproject.toml keeps `>=` ranges for people who
+  install the package; this repo's venvs and CI install `requirements.txt`, a universal
+  `uv pip compile --generate-hashes` lock, with `--require-hashes`, then the package with
+  `--no-deps --no-build-isolation` (setuptools is in the lock). Dependabot reruns the lock's
+  header command when it bumps a floor; `tests/test_units.py` checks the header matches
+  `just lock`, every pin has a hash and the lock meets every floor. Both files are sandbox
+  write-denied (D-008). Security round 2026-11-07 r1, L4.

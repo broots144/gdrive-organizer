@@ -26,6 +26,8 @@ updates:
     commit-message:
       prefix: "chore(deps)"
     groups:
+      # pyproject.toml declares ranges; requirements.txt is the hash-pinned lock compiled from it by
+      # `uv pip compile` (its header holds the command, which Dependabot reruns; see `just lock`).
       # Requirements here are ranges (>=x) with no pinned version, so Dependabot cannot tell a major
       # from a minor and update-type groups skip them (one PR per package). One group takes them all.
       python:

@@ -1,6 +1,8 @@
 # Verify targets (repo-state pattern). A phase is done only after its verify target passes and the
-# output is pasted into STATE.md. Setup: python3 -m venv .venv && .venv/bin/pip install -e ".[all]"
+# output is pasted into STATE.md.
 # PY overrides the interpreter; the demo needs the gdrive-organizer entry point on PATH.
+# Setup from the hash-pinned lock (what CI installs):
+#   python3 -m venv .venv && just install
 
 py := env_var_or_default("PY", if path_exists(".venv/bin/python") == "true" { ".venv/bin/python" } else { "python3" })
 export PATH := if path_exists(".venv/bin") == "true" { justfile_directory() + "/.venv/bin:" + env_var("PATH") } else { env_var("PATH") }
@@ -19,6 +21,18 @@ lint:
 floors:
     {{py}} scripts/check_floors.py
     {{py}} -m pip check
+
+# install exactly the hash-pinned lock, then the package itself without resolving anything
+install:
+    {{py}} -m pip install --require-hashes -r requirements.txt
+    {{py}} -m pip install --no-deps --no-build-isolation -e .
+
+# re-resolve the hash-pinned lock (every extra, every platform, Python 3.10+). Dependabot reruns
+# this exact command from the header of requirements.txt when it bumps a pyproject floor, so keep
+# the command and the default header unchanged. Then `just install` and `just check`.
+lock:
+    uv pip compile pyproject.toml requirements.in --extra all --universal \
+        --python-version 3.10 --generate-hashes -o requirements.txt
 
 test:
     {{py}} tests/test_fs_local.py
