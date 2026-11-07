@@ -1,6 +1,6 @@
 # Current Build State
 
-Last updated: 2026-11-07 by Claude Code: review round 2026-11-07 r2 in progress (14 verified findings M1 to M8, L1, L3 to L8); #39 fixed the generator findings, #40 apply and undo, this PR the privacy findings (M1, L5, L6, L8).
+Last updated: 2026-11-07 by Claude Code: review round 2026-11-07 r2 complete (#39 generators, #40 apply and undo, #41 privacy): all 14 verified findings fixed with regression tests; grade A, one documented accepted Low (peek memory). The owner's `.venv` is an editable install, so `main` is live; `just check` passes in the main checkout.
 
 ## Phases
 
@@ -96,13 +96,40 @@ demo and CLI smoke ok
 
 ## Security grade
 
-Security round 2026-11-07 r1 (rubric: A+ none above Informational plus defense in depth; A no
-open Medium or higher and every open Low documented here; B open Medium; C any High).
+Rubric: A+ none above Informational plus defense in depth; A no open Medium or higher and every
+open Low documented here (accepted risk, or blocked on the operator or money); B open Medium; C
+any High; D multiple Highs or an exploitable High on an internet-facing surface; F any Critical.
 
-**Current grade: A** (2026-11-07). All four verified findings are fixed: L1 pypdf floor in the venv,
-in `peek` and in `just check`/CI (#36); L2 parse timer that broad `except` cannot swallow (#36); L3
-files others own skipped by default and marked `untrusted`, snippet text is data (#36); L4
-hash-pinned lock for CI and installs (#37). Not A+ because of the accepted Low below.
+**Current grade: A** (2026-11-07, after review round 2026-11-07 r2). Not A+ only because of the
+accepted Low below.
+
+Round 2026-11-07 r2 (14 verified findings, all fixed, each with a regression test in
+`tests/test_units.py`):
+
+- #39 generators: M2 dedupe never keeps a copy someone else owns (dedupe, validate and a live
+  `ownedByMe` check in `DriveBackend.trash`); M3 nested atomic roots move only with the outer
+  unit (plan, validate); M4 items already at their target stay put; L1 collision loop ends when a
+  fallback target is occupied; L3 gates before the outermost-only pass; L4 generators refuse an
+  `--out` with an apply journal; L7 a file never targets a folder's name.
+- #40 apply and undo: M5 undo reconciles ops left at intent or failed first, and stops before
+  reversing anything if one cannot be settled; M6 undo after a re-index for moves written without
+  `src_key`; M7 fs undo no longer refused after every re-index; M8 manifest hashed and parsed from
+  one read.
+- #41 privacy: M1 `leak_check --staged` scans staged blobs; L6 identity check covers env and
+  git's guess for author and committer; L5 report masks and peek drops text naming a protected
+  folder; L8 quarantine file created 0600 (O_NOFOLLOW).
+
+Round 2026-11-07 r1 (4 findings, fixed): L1 pypdf floor in the venv, in `peek` and in `just
+check`/CI (#36); L2 parse timer that broad `except` cannot swallow (#36); L3 files others own
+skipped by default and marked `untrusted`, snippet text is data (#36); L4 hash-pinned lock for CI
+and installs (#37).
+
+Defense in depth in place: sandboxed assistant with no Drive write path (`--confirm-sha`,
+denyWrite list enforced by `tests/test_sandbox_settings.py`), hash-pinned and SHA-pinned supply
+chain (lock, actions pinned by commit, Dependabot with cooldown), validate plus live re-checks in
+both backends, write-ahead journal treated as untrusted input, token and quarantine files 0600
+from creation, pre-commit leak and identity checks, and the security regression tests above in CI
+on macOS and Linux.
 
 Open Lows (accepted risk, with reasons):
 
@@ -118,6 +145,11 @@ Blocked on the operator or money: none.
 
 Informational (no action needed for the grade):
 
+- Residual design notes from round r2: a move written without `src_key` is bound at undo time to
+  the ID its journal records resolved (all records must agree, and Drive undo checks that ID live
+  at the planned destination with the planned name); an op left at intent or failed that no
+  longer validates after a re-index stops `--undo` until it is rerun with `--db` set to the index
+  the manifest was validated against (indexing never overwrites an index, so it still exists).
 - The lock's transitive pins get no Dependabot cooldown when `just lock` re-resolves them (only
   direct floor bumps wait 3/7 days). Hashes still stop a tampered artifact for an existing
   version. To verify on the next weekly Dependabot pip run: it should update `requirements.txt`
