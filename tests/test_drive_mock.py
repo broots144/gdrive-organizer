@@ -739,7 +739,15 @@ def main():
     snips = list(sqlite3.connect("d.sqlite").execute("select key,method,flagged from snippets"))
     print("peek snippets:", snips)
     assert all(k not in ("L1", "L2") for k, _, _ in snips)
+    assert "NO" not in [k for k, _, _ in snips], snips  # someone else's file: skipped by default
     db2 = sqlite3.connect("d.sqlite")
+    assert not db2.execute("select count(*) from snippets where untrusted is not 0").fetchone()[0]
+    rc = run("peek", ["--db", "d.sqlite", "--config", "cfg.json", "--client-secret", "x",
+                      "--limit", "50", "--include-shared"])
+    assert rc == 0
+    marked = dict(db2.execute("select key, untrusted from snippets"))
+    assert marked.get("NO") == 1 and sum(marked.values()) == 1, marked
+    print("peek skips files others own unless --include-shared, and marks them untrusted")
     db2.execute("DELETE FROM snippets")
     db2.commit()
     rc = run("peek", ["--db", "d.sqlite", "--config", "cfg.json", "--client-secret", "x",

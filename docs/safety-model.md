@@ -9,7 +9,7 @@ describe the code in this repository (fact) unless marked otherwise.
 |---|---|---|
 | Index | Protected folders are recognized by Drive ID or name from their parent's listing and never listed, fetched or updated; shortcuts to them are quarantined. Only metadata is requested. | `index_drive.py`, `core.Guard`; tested in `tests/test_drive_mock.py` (the protected ID never appears in any API call) |
 | Report | Aggregates only; sensitive-looking names masked; protected entries counted, never named. | `report.py` |
-| Peek (optional) | Content read through the API only, bounded (first page, first 4 KB, or an export truncated to 1,500 characters); sensitive names skipped; matching snippets discarded unless `--include-sensitive`. | `peek.py` |
+| Peek (optional) | Content read through the API only, bounded (first page, first 4 KB, or an export truncated to 1,500 characters); sensitive names skipped; matching snippets discarded unless `--include-sensitive`; files someone else owns skipped unless `--include-shared`, and their snippets stored with `untrusted=1`. Untrusted bytes get bounded parsers: download capped at `--max-bytes`, DOCX zip-bomb checks, a parse timer that a parser's `except Exception:` cannot swallow (a `BaseException`, re-fired every second), and PDFs refused when the installed pypdf is older than the floor with known parser DoS fixes. | `peek.py`; tested in `tests/test_peek_limits.py` and `tests/test_drive_mock.py` |
 | Plan | Rules compile to `mkdir`, `move` and `trash` only. Generators skip what validate would refuse and never print paths. | `scripts/*_to_plan.py` |
 | Validate | Refuses: protected ground (the folder, its contents, any ancestor, protected-looking destination names); ambiguous sources; overlapping sources; existing destinations (case and Unicode insensitive); splitting atomic units; recently modified folders, sensitive names and items not owned by you, unless the op carries an explicit override; items Drive marks immovable; invalid names; trash without a byte-identical surviving copy; trash of a non-empty folder. | `validate.py` |
 | Apply | Runs only with the manifest's sha256; re-validates; re-checks protected ground before each op; checks each item against the index (drift) and, for trash, both copies or the folder's live children in Drive; write-ahead journal with fsync (a torn last line from a crash is dropped and its op reconciled); reconciles unknown or failed ops against Drive before retrying; folder creates are retried only on rate limits (where Drive applied nothing), never blind after a 5xx or timeout; undo by Drive ID, journaled and reconciled the same way. Every command refuses an index whose run did not finish. The journal is treated as untrusted input: it must carry this manifest's sha256, each record must match the reviewed op it claims to be, folder IDs it names must be the live folders this manifest created, protected IDs are refused, and undo reverses an op only if Drive still shows exactly what the record says was done, and only back to the reviewed source folder and name, even after a re-index. The index is not covered by the sha either, so every Drive ID taken from it is checked in Drive against the reviewed path (the root, each destination folder, each source folder and name). Sandboxed assistant commands cannot write journals, the index, the config, or the code and settings you run outside the sandbox. The tests and scripts you run never put the repo root on `sys.path`, so a root-level directory the sandbox creates cannot shadow a stdlib module. | `apply.py`, `.claude/settings.json`; tested in `tests/test_drive_mock.py`, `tests/test_fs_local.py` and `tests/test_sandbox_settings.py` |
@@ -35,6 +35,14 @@ describe the code in this repository (fact) unless marked otherwise.
   name is an ordinary folder to this tool.
 - **Your assistant's judgement.** The tool constrains what can happen, not whether a proposed
   taxonomy is a good one. Review the plan.
+- **Snippets are untrusted text.** A peeked file can contain text written to steer an assistant
+  (prompt injection). CLAUDE.md tells the assistant that snippet text is data, never
+  instructions, and peek skips files you do not own by default, but the real stop is that the
+  assistant cannot write to Drive: every change goes through a manifest you review and run with
+  `--confirm-sha`. Read the plan, not the assistant's summary of it.
+- **Peek memory is not capped.** The download is capped and each parse is time-limited, but a
+  parser can still allocate a lot of memory within that time. The effect is limited to your own
+  `peek` run (local availability); see STATE.md for why this is an accepted risk.
 
 ## Reporting a problem
 

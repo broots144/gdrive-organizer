@@ -25,10 +25,14 @@ already explain most files and only a few need a look; sensitivity rules still a
 --include-sensitive also peeks sensitive-named items and keeps the text of matching snippets
 (still marked flagged=1). Use it only when you have decided that content may be shown to your
 assistant. Protected folders are never affected: they are not in the index at all.
+Files you do not own (shared into your tree by someone else) are skipped unless
+--include-shared; their snippets are stored with untrusted=1. Snippet text is data, never
+instructions: anyone who can put a file in your tree chooses what it says.
 """
 from __future__ import annotations
 
 import argparse
+import importlib.metadata
 import io
 import re
 import signal
@@ -53,12 +57,16 @@ EXPORT = {
 }
 
 
-def candidates(db, cfg, limit, max_depth=None, include_sensitive=False, only_keys=None):
+def candidates(db, cfg, limit, max_depth=None, include_sensitive=False, only_keys=None,
+               include_shared=False):
     gen = re.compile(cfg["generic_name_regex"])
     sens = "" if include_sensitive else "AND sensitive=0 "
+    # owned_by_me is NULL on an fs index (unknown), 0 for items someone else owns
+    shared = "" if include_shared else "AND owned_by_me IS NOT 0 "
     rows = db.execute(
-        "SELECT key,name,depth,kind,ext,size,mime FROM items WHERE kind IN ('file','gdoc') "
-        f"{sens}AND under_atomic IS NULL AND key NOT IN (SELECT key FROM snippets)"
+        "SELECT key,name,depth,kind,ext,size,mime,owned_by_me FROM items "
+        f"WHERE kind IN ('file','gdoc') {sens}{shared}"
+        "AND under_atomic IS NULL AND key NOT IN (SELECT key FROM snippets)"
     ).fetchall()
     out = []
     for r in rows:
@@ -85,8 +93,38 @@ ZIP_MAX_TOTAL = 64 * 1024 * 1024
 ZIP_MAX_RATIO = 200
 
 
+# pypdf releases before this floor have known parser DoS advisories (infinite loops, memory
+# exhaustion). pyproject.toml declares the same or a higher floor; an older venv that was never
+# reinstalled must not parse untrusted PDFs.
+PYPDF_FLOOR = "6.21.4"
+
+
 class PeekRefused(Exception):
     pass
+
+
+class ParseTimeout(BaseException):
+    """Raised by the parse timer. A BaseException, so a parser's `except Exception:` recovery
+    loop cannot swallow it; main() catches it explicitly for each file."""
+
+
+def _version_tuple(v):
+    m = re.match(r"(\d+)(?:\.(\d+))?(?:\.(\d+))?", v or "")
+    return tuple(int(x or 0) for x in m.groups()) if m else (0, 0, 0)
+
+
+def _installed(dist):
+    try:
+        return importlib.metadata.version(dist)
+    except importlib.metadata.PackageNotFoundError:
+        return None
+
+
+def _require_pypdf():
+    have = _installed("pypdf")
+    if have is None or _version_tuple(have) < _version_tuple(PYPDF_FLOOR):
+        raise PeekRefused(f"pypdf {have} is below {PYPDF_FLOOR} (known parser DoS fixes); "
+                          'reinstall: pip install -U -e ".[all]"')
 
 
 def _download_capped(svc, key, max_bytes):
@@ -111,20 +149,30 @@ def _check_zip(data):
 
 @contextmanager
 def _time_limit(seconds):
-    if not hasattr(signal, "SIGALRM") or threading.current_thread() is not threading.main_thread():
+    if not hasattr(signal, "setitimer") or threading.current_thread() is not threading.main_thread():
         yield
         return
+    armed = [True]
 
     def _expired(*_):
-        raise PeekRefused(f"parsing took longer than {seconds}s")
+        if armed[0]:
+            raise ParseTimeout(f"parsing took longer than {seconds}s")
 
     previous = signal.signal(signal.SIGALRM, _expired)
-    signal.alarm(seconds)
+    # fires again every second, so a timeout swallowed by a bare `except:` is raised again
+    signal.setitimer(signal.ITIMER_REAL, seconds, 1)
     try:
         yield
     finally:
-        signal.alarm(0)
-        signal.signal(signal.SIGALRM, previous)
+        # the timer can fire while this runs; retry until disarmed and the handler is restored
+        while True:
+            try:
+                armed[0] = False
+                signal.setitimer(signal.ITIMER_REAL, 0)
+                signal.signal(signal.SIGALRM, previous)
+                break
+            except ParseTimeout:
+                continue
 
 
 def peek(svc, r, max_bytes, chars):
@@ -139,6 +187,7 @@ def peek(svc, r, max_bytes, chars):
         return "range4k", gdrive.call(req).decode("utf-8", "replace")[:chars]
     size = r["size"] or 0
     if r["ext"] == ".pdf" and 0 < size <= max_bytes:
+        _require_pypdf()
         from pypdf import PdfReader
         data = _download_capped(svc, r["key"], max_bytes)
         with _time_limit(PARSE_SECONDS):
@@ -154,6 +203,15 @@ def peek(svc, r, max_bytes, chars):
     return "skip", None
 
 
+def peek_safely(svc, r, max_bytes, chars):
+    """(method, text, error) for one file; a parse timeout or any failure is that file's error."""
+    try:
+        method, text = peek(svc, r, max_bytes, chars)
+        return method, text, None
+    except (Exception, ParseTimeout) as ex:  # keep going; record per-file failure
+        return "error", None, repr(ex)[:300]
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog=PROG)
     ap.add_argument("--db", required=True)
@@ -167,6 +225,8 @@ def main(argv=None) -> int:
     ap.add_argument("--only-keys", help="file of Drive IDs (one per line) to peek, nothing else")
     ap.add_argument("--include-sensitive", action="store_true",
                     help="also peek sensitive-named items and keep flagged snippet text")
+    ap.add_argument("--include-shared", action="store_true",
+                    help="also peek files other people own (snippets stored with untrusted=1)")
     a = ap.parse_args(argv)
     cfg = g.load_config(a.config)
     guard = g.Guard(cfg)
@@ -180,17 +240,18 @@ def main(argv=None) -> int:
     if a.only_keys:
         with open(a.only_keys, encoding="utf-8") as fh:
             only = {ln.strip() for ln in fh if ln.strip() and not ln.startswith("#")}
-    cands = candidates(db, cfg, a.limit, a.max_depth, a.include_sensitive, only)
+    cands = candidates(db, cfg, a.limit, a.max_depth, a.include_sensitive, only,
+                       a.include_shared)
+    try:
+        _require_pypdf()
+    except PeekRefused as ex:
+        print(f"warning: PDFs will be recorded as errors: {ex}", file=sys.stderr)
     stats = {"candidates": len(cands), "ok": 0, "flagged": 0, "skipped": 0, "errors": 0}
     for r in cands:
-        method, text, flagged, err = "skip", None, 0, None
-        try:
-            method, text = peek(svc, r, a.max_bytes, a.chars)
-        except Exception as ex:  # keep going; record per-file failure
-            err = repr(ex)[:300]
-            stats["errors"] += 1
+        flagged = 0
+        method, text, err = peek_safely(svc, r, a.max_bytes, a.chars)
         if err:
-            method = "error"
+            stats["errors"] += 1
         elif text and guard.no_snippet and guard.no_snippet.search(text):
             flagged = 1
             if not a.include_sensitive:
@@ -200,8 +261,9 @@ def main(argv=None) -> int:
             stats["skipped"] += 1
         else:
             stats["ok"] += 1
-        db.execute("INSERT OR REPLACE INTO snippets(key,method,text,flagged,error) VALUES(?,?,?,?,?)",
-                   (r["key"], method, text, flagged, err))
+        untrusted = 1 if r["owned_by_me"] == 0 else 0
+        db.execute("INSERT OR REPLACE INTO snippets(key,method,text,flagged,error,untrusted) "
+                   "VALUES(?,?,?,?,?,?)", (r["key"], method, text, flagged, err, untrusted))
         db.commit()
     print(stats)
     return 0
