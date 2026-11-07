@@ -368,7 +368,7 @@ class DriveBackend:
                 raise RuntimeError("folder is not empty in Drive; leaving it")
             self.gd.call(self.svc.files().update(fileId=fid, body={"trashed": True}, fields="id"))
             return {"trashed": True}
-        fields = "id,name,parents,trashed,md5Checksum,size"
+        fields = "id,name,parents,trashed,md5Checksum,size,ownedByMe"
         cur = self.gd.call(self.svc.files().get(fileId=fid, fields=fields))
         keep = self.gd.call(self.svc.files().get(fileId=e["keep_key"], fields=fields))
         if cur.get("trashed"):
@@ -381,6 +381,9 @@ class DriveBackend:
         if keep.get("trashed") or keep.get("md5Checksum") != cur.get("md5Checksum") or \
                 str(keep.get("size")) != str(cur.get("size")):
             raise RuntimeError("the copy to keep is gone, trashed or no longer identical")
+        if keep.get("ownedByMe") is not True:
+            # its owner could delete it or cut access, and then no copy would be left
+            raise RuntimeError("the copy to keep is not owned by you; leaving this one")
         self.gd.call(self.svc.files().update(fileId=fid, body={"trashed": True}, fields="id"))
         return {"trashed": True}
 

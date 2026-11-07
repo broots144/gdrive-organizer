@@ -1,6 +1,6 @@
 # Current Build State
 
-Last updated: 2026-11-07 by Claude Code: security round 2026-11-07 r1 complete (#36 L1 to L3, #37 L4); grade A, one documented Low (peek memory) below. The owner's `.venv` was reinstalled from the lock (pypdf 6.21.4, google-api-python-client 2.201.0, google-auth-oauthlib 1.5.0) and `just check` passes.
+Last updated: 2026-11-07 by Claude Code: review round 2026-11-07 r2 in progress (14 verified findings M1 to M8, L1, L3 to L8); this PR fixes the generator findings M2, M3, M4, L1, L3, L4, L7.
 
 ## Phases
 
@@ -52,6 +52,15 @@ Last updated: 2026-11-07 by Claude Code: security round 2026-11-07 r1 complete (
   universal lock from `just lock` (inputs pyproject.toml plus `requirements.in`: setuptools and
   the pypdf<7 cooldown hold); CI and `just install` use `--require-hashes` then
   `--no-deps --no-build-isolation -e .`; `tests/test_units.py` `lock_is_hashed_and_meets_floors`.
+- Review round 2026-11-07 r2, generators (M2, M3, M4, L1, L3, L4, L7): `dedupe` ranks owned
+  copies first and never keeps a copy someone else owns (`no_owned_copy`); `validate` refuses a
+  `keep_key` with `owned_by_me=0` and `DriveBackend.trash` requires live `ownedByMe` on the copy
+  to keep; `plan` and `validate` refuse any item with `under_atomic` set (nested roots too);
+  `plan` drops items already at their target (`already_at_target`), gates before the
+  outermost-only pass, ends the collision loop when a duplicates or unsorted fallback is itself
+  occupied, and blocks a file whose target is a folder; `core.refuse_executed_out` stops `plan`,
+  `dedupe` and `empty-dirs` overwriting an `--out` with an apply journal. Tests: the `review_*`
+  groups in `tests/test_units.py`.
 - Token files (`--token`) are created 0600 with `os.open` and an existing one is `fchmod` 0600
   before the token is written, so no other local user can read it at any point;
   `DriveBackend.move` and `.trash` refuse a protected src, src parent or keep id before any

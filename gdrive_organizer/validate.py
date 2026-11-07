@@ -31,8 +31,8 @@ Rules enforced (errors block execution):
   * sensitive-looking names, items not owned by you, items Drive says you cannot move
   * name validity: <=255 UTF-8 bytes, no slash/NUL/control chars/colon, no edge whitespace
   * Google pointer files (.gdoc etc) keep their extension
-  * trash: a file needs a byte-identical keep_key copy that survives the manifest; a folder must
-    be empty apart from folders trashed earlier in the manifest
+  * trash: a file needs a byte-identical keep_key copy, owned by you, that survives the
+    manifest; a folder must be empty apart from folders trashed earlier in the manifest
 """
 from __future__ import annotations
 
@@ -209,7 +209,9 @@ def validate(db, cfg, ops):
                 seen_src.add(item["key"])
                 if item["kind"] == "dot":
                     err("src is a dot entry")
-                if item["under_atomic"] and not item["atomic_root"]:
+                # a nested unit (node_modules or an inner project inside a repo) is still part
+                # of the outer unit: only the outermost root moves
+                if item["under_atomic"]:
                     err(f"src is inside atomic unit '{item['under_atomic']}'; move the unit")
                 if item["sensitive"] and "sensitive" not in over:
                     err("src has a sensitive-looking name (override: sensitive)")
@@ -289,6 +291,9 @@ def validate_trash(op, err, by_key, by_pk, guard, recent, over, trashed_keys, sr
             err("keep_key is itself trashed by this manifest")
         if keep["kind"] not in ("file", "gdoc"):
             err("keep_key is not a file")
+        if keep["owned_by_me"] == 0:
+            err("keep_key is not owned by you: its owner can delete it, so it cannot be the "
+                "copy that stays")
         if guard.path_violation(keep["path"]):
             err("keep_key lies on protected ground")
         # by ID, not path: Drive allows identical names side by side in one folder

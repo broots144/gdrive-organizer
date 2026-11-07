@@ -6,9 +6,10 @@
 Duplicates are files with the same Drive md5Checksum and size (byte-identical; Google Docs have
 no md5 and are never included, nor are empty files). In each group one copy is kept and the
 others are trashed where the policy allows. The policy file (see examples/dedupe.example.py):
-  KEEP_ORDER   path prefixes, most preferred first: the first copy under the earliest prefix is
-               kept (unlisted paths rank after all listed ones except LAST); ties go to the
-               shortest path, then the oldest file
+  KEEP_ORDER   path prefixes, most preferred first: the first copy you own under the earliest
+               prefix is kept (unlisted paths rank after all listed ones except LAST); ties go
+               to the shortest path, then the oldest file. A copy someone else owns is never
+               the one kept, and a group with no copy of yours is left alone
   LAST         path prefixes kept only when nothing better exists (e.g. archive/duplicates)
   NEVER_TRASH  path prefixes whose files are never trashed (whole units, app landing folders)
 Every op names its keep_key, which validate and apply both check. Output is counts only.
@@ -47,6 +48,7 @@ def main(argv=None) -> int:
     ap.add_argument("--policy", required=True)
     ap.add_argument("--out", required=True)
     a = ap.parse_args(argv)
+    g.refuse_executed_out(a.out)
 
     cfg = g.load_config(a.config)
     guard = g.Guard(cfg)
@@ -91,8 +93,15 @@ def main(argv=None) -> int:
     skipped = collections.Counter()
     bytes_trash = bytes_left = 0
     for (md5, size), rs in groups.items():
-        rs.sort(key=lambda r: (rank(r), len(r["path"]), r["mtime"] or 0, r["key"]))
+        # a copy someone else owns is never the one kept: they can delete it, or revoke access,
+        # and the owner's own copy would then be gone too (validate and apply refuse it as well)
+        rs.sort(key=lambda r: (r["owned_by_me"] == 0, rank(r), len(r["path"]), r["mtime"] or 0,
+                               r["key"]))
         keep, rest = rs[0], rs[1:]
+        if keep["owned_by_me"] == 0:
+            skipped["no_owned_copy"] += len(rest)
+            bytes_left += size * len(rest)
+            continue
         kept_in[keep["path"].split("/")[0] if "/" in keep["path"] else "(root)"] += 1
         for r in rest:
             reason = why_not(r)
