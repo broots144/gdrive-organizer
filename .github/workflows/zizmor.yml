@@ -1,0 +1,34 @@
+name: zizmor
+# Static analysis of the workflows and dependabot.yml themselves (template injection, token
+# permissions, credential persistence, unpinned or known-vulnerable actions). Runs only when
+# something under .github/ changes. Config: .github/zizmor.yml.
+on:
+  pull_request:
+    paths: [".github/**"]
+  push:
+    branches: [main]
+    paths: [".github/**"]
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+jobs:
+  zizmor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Pinned release, checksum checked; bump the version and the sha256 together.
+      # GH_TOKEN lets the online audits (known-vulnerable actions, impostor commits) read GitHub.
+      - name: zizmor 1.32.0 (pinned release, checksum checked)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          f=zizmor-x86_64-unknown-linux-gnu.tar.gz
+          curl -sSfL -o "$RUNNER_TEMP/$f" "https://github.com/zizmorcore/zizmor/releases/download/v1.32.0/$f"
+          echo "bb110cc765eca9cd7efb2e284a956be5974c60027b0970f16397d86208a9957b  $RUNNER_TEMP/$f" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/$f" -C "$RUNNER_TEMP" zizmor
+          "$RUNNER_TEMP/zizmor" --no-progress --format github .
