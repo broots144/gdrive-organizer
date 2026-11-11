@@ -779,6 +779,11 @@ def apply_main_fs_flow():
     assert "--confirm-sha must equal" in str(rc), rc
     rc, _, _ = run_main(ap, base + ["--batch", "0"])
     assert rc == 2  # argparse error
+    # review 2026-11-07 L9: no --config means no protected-ID checks, so --execute refuses
+    noconf = [x for x in base if x not in ("--config", os.path.join(d, "cfg.json"))]
+    rc, _, err = run_main(ap, noconf + ["--execute", "--confirm-sha", sha])
+    assert rc == 2 and "--execute needs --config" in err, (rc, err)
+    assert os.path.exists(os.path.join(root, "a.txt"))
     # --max-ops stops early; a rerun resumes; --batch pauses between batches
     ex = base + ["--execute", "--confirm-sha", sha]
     rc, out, _ = run_main(ap, ex + ["--max-ops", "2"])
@@ -1027,6 +1032,29 @@ def drive_backend_reconcile_and_resolution():
     raises(RuntimeError, be.undo, mv, None, {"src": "other.txt"}, match="(name)")
     shutil.rmtree(d)
     print("drive backend: trash reconcile, folder id refusals, adopt_created, undo_reconcile")
+
+
+@test
+def drive_move_name_checks_match_validate():
+    """Review 2026-11-07 L2: the src name check used to be exact while validate casefolds, so
+    a src validate accepted aborted the run; and an NFD name got a silent NFC rename."""
+    import unicodedata
+    nfd = unicodedata.normalize("NFD", "caf\u00e9.txt")
+    st = drive_state()
+    st["f1"]["name"] = nfd
+    be, d = drive_backend(st)
+    mv = {"op": "move", "src": "a/CAF\u00c9.TXT", "src_key": "f1", "src_parent_key": "A",
+          "dst": "D/caf\u00e9.txt", "expect": {"name": nfd}}
+    rec = be.move(mv)
+    assert st["f1"]["parents"] == ["D"] and st["f1"]["name"] == nfd, st["f1"]
+    assert rec["old_name"] == nfd
+    st["f1"]["parents"] = ["A"]
+    rec = be.move(dict(mv, dst="D/Cafe renamed.txt"))  # a real rename still renames
+    assert st["f1"]["name"] == "Cafe renamed.txt"
+    st["f1"].update(parents=["A"], name=nfd)
+    raises(RuntimeError, be.move, dict(mv, src="a/other.txt"), match="not the reviewed name")
+    shutil.rmtree(d)
+    print("drive move: casefolded NFC src name check, no silent NFC rename")
 
 
 # ------------------------------------------------------------------ hash-pinned lock

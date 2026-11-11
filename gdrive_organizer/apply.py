@@ -346,7 +346,9 @@ class DriveBackend:
         old_pid = e["src_parent_key"]
         if cur.get("parents") != [old_pid]:
             raise RuntimeError("drift: src parent changed since indexing")
-        if g.nfc(cur["name"].replace("/", ":")) != e["src"].rsplit("/", 1)[-1]:
+        # the same key validate and live_path_ok use (NFC, casefolded), so a src that validate
+        # accepted is never refused here half way through a run (review 2026-11-07 L2)
+        if g.pkey(shown(cur["name"])) != g.pkey(e["src"].rsplit("/", 1)[-1]):
             raise RuntimeError("drift: src name is not the reviewed name")
         self.check_src(e, old_pid)
         new_pid = self.folder_id(g.parent_of(e["dst"]))
@@ -354,7 +356,9 @@ class DriveBackend:
         kw = {"fileId": fid, "fields": "id,name,parents"}
         if new_pid != old_pid:
             kw.update(addParents=new_pid, removeParents=old_pid)
-        body = {"name": new_name} if new_name != e["expect"]["name"] else {}
+        # an NFD name that the plan keeps (its NFC form) is not renamed to NFC behind the
+        # owner's back (L2); a case change or any real rename still is
+        body = {"name": new_name} if g.nfc(new_name) != g.nfc(e["expect"]["name"]) else {}
         res = self.gd.call(self.svc.files().update(body=body, **kw))
         if res.get("parents") != [new_pid]:
             raise RuntimeError("post-check: parents not as expected")
@@ -542,6 +546,11 @@ def main(argv=None) -> int:
     a = ap.parse_args(argv)
     if a.batch < 1:
         ap.error("--batch must be >= 1 (ops between pauses; use --pause 0 for no pause)")
+
+    if a.execute and not a.config:
+        # the protected names and IDs live in the config: without it every protected-ID check
+        # below would silently pass (review 2026-11-07 L9)
+        ap.error("--execute needs --config (the protected folders); refusing to run without it")
 
     cfg = g.load_config(a.config)
     db = g.open_db(a.db)

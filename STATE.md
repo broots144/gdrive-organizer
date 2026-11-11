@@ -1,6 +1,6 @@
 # Current Build State
 
-Last updated: 2026-11-07 by Claude Code: review round 2026-11-07 r2 complete (#39 generators, #40 apply and undo, #41 privacy): all 14 verified findings fixed with regression tests; grade A, one documented accepted Low (peek memory). The owner's `.venv` is an editable install, so `main` is live; `just check` passes in the main checkout.
+Last updated: 2026-11-10 by Claude Code: code-review leftovers L2 (apply name checks now use the validate key, no silent NFC rename) and L9 (`apply --execute` refuses to run without `--config`) fixed with tests; both were missing from this file. Before that: 2026-11-07 by Claude Code: review round 2026-11-07 r2 complete (#39 generators, #40 apply and undo, #41 privacy): all 14 verified findings fixed with regression tests; grade A, one documented accepted Low (peek memory). The owner's `.venv` is an editable install, so `main` is live; `just check` passes in the main checkout.
 
 ## Phases
 
@@ -118,6 +118,17 @@ Round 2026-11-07 r2 (14 verified findings, all fixed, each with a regression tes
 - #41 privacy: M1 `leak_check --staged` scans staged blobs; L6 identity check covers env and
   git's guess for author and committer; L5 report masks and peek drops text naming a protected
   folder; L8 quarantine file created 0600 (O_NOFOLLOW).
+
+Code-review max 2026-11-07 leftovers (found missing from this file by the 2026-11-10 sweep, fixed
+2026-11-10, tests in `tests/test_units.py`):
+
+- L2 (Low): the Drive move's src name check was exact while validate and `live_path_ok` compare
+  NFC casefolded keys, so a src validate accepted could abort a run part way; and an NFD name the
+  plan kept got a silent NFC rename. The check now uses `pkey(shown(name))`, and a name is
+  renamed only when its NFC form differs. Test: `drive_move_name_checks_match_validate`.
+- L9 (Low): `apply` without `--config` loaded no protected names or IDs, so every protected-ID
+  check passed silently. `--execute` (and `--undo --execute`) now refuses without `--config`;
+  dry runs still work. Test: `apply_main_fs_flow`.
 
 Round 2026-11-07 r1 (4 findings, fixed): L1 pypdf floor in the venv, in `peek` and in `just
 check`/CI (#36); L2 parse timer that broad `except` cannot swallow (#36); L3 files others own
