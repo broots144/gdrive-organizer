@@ -1,0 +1,6 @@
+# zizmor configuration (run by .github/workflows/zizmor.yml).
+rules:
+  # Dependabot waits 3 days here by choice (ADR-089); zizmor's default asks for 7.
+  dependabot-cooldown:
+    config:
+      days: 3
