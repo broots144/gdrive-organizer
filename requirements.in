@@ -4,4 +4,4 @@
 # [build-system] requires in pyproject.toml (tests/test_units.py checks).
 setuptools>=84.2.1
 # Hold: pypdf 7.0.0 is in its 7 day major cooldown until 2026-11-13 (STATE.md Next 1).
-pypdf<7
+pypdf<8
